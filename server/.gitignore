@@ -1,0 +1,6 @@
+.env
+transaction-server.log
+node_modules
+yarn.lock
+package-lock.json
+dist
