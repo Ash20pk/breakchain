@@ -17,6 +17,7 @@
     "redis": "^4.7.0",
     "socket.io": "^4.8.1",
     "sonner": "^2.0.1",
+    "viem": "^2.23.8",
     "winston": "^3.17.0"
   },
   "devDependencies": {
