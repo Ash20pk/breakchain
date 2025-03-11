@@ -13,15 +13,15 @@ const PLAYER = {
     Y: 325,
   },
   GRAVITY: {
-    Y: 2500,
+    Y: 2300,
   },
   JUMP: {
     VELOCITY: {
-      MAX: 1500,
-      START: 1500 * 0.9 * -1,
-      SPEED_FALL: 1500 * 0.75,
-      INCREASE_INCREMENT: 75 * -1,
-      INCREASE_THRESHOLD: 200 * -1,
+      MAX: 2000, 
+      START: 1800 * 0.9 * -1, 
+      SPEED_FALL: 1800 * 0.75, 
+      INCREASE_INCREMENT: 95 * -1, 
+      INCREASE_THRESHOLD: 250 * -1, 
     },
     ACCELERATION: 3200,
   },
