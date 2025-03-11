@@ -6,7 +6,7 @@ import { store, updateStore } from './appkitStore';
 import { updateButtonVisibility } from './dom';
 
 // Create Wagmi adapter
-const projectId = '5c6a79ef72d5c180931733dc0b6d8d1c';
+const projectId = process.env.WALLET_CONNECT_PROJECT_ID;
 
 export const wagmiAdapter = new WagmiAdapter({
   projectId,

@@ -1,6 +1,5 @@
 import Game from './Game';
 import config from './config';
-import './utils/telegram/games';
 import { isProd } from './utils';
 import { createWalletButton } from './utils/wallet';
 

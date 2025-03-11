@@ -5,12 +5,10 @@ import InputManager from './InputManager';
 import SoundManager from './SoundManager';
 import ResizeManager from './ResizeManager';
 import LocalScoreManager from './score/LocalScoreManager';
-import TelegramScoreManager from './score/TelegramScoreManager';
 import UI from './UI';
 import Intro from './Intro';
 import Player from '../../prefabs/player/Player';
 import Horizon from '../../prefabs/horizon/Horizon';
-import isTelegramMode from '../../utils/telegram/isTelegramMode';
 
 /**
  * Main game scene
@@ -48,9 +46,7 @@ class GameScene extends Phaser.Scene {
       gameSpeed: this.onResizeGameSpeed.bind(this),
       gameObjects: this.onResizeGameObjects.bind(this),
     });
-    this.scoreManager = isTelegramMode()
-      ? new TelegramScoreManager(this.events)
-      : new LocalScoreManager(this.events);
+    this.scoreManager = new LocalScoreManager(this.events);
 
     // Register event handlers
     this.events.on(CONFIG.EVENTS.GAME_START, this.onGameStart, this);

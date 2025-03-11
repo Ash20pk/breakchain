@@ -49,6 +49,7 @@ module.exports = mergeWithRules({
       exclude: [/favicons[\\/].*\.(?:png|jpg|jpeg|gif|svg)$/i, /license/i],
       clientsClaim: true,
       skipWaiting: true,
+      maximumFileSizeToCacheInBytes: 5 * 1024 * 1024
     }),
   ],
   optimization: {
