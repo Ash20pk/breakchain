@@ -1,7 +1,6 @@
 import { defineConfig, loadEnv } from 'vite';
 import { resolve } from 'path';
 import { VitePWA } from 'vite-plugin-pwa';
-import legacy from '@vitejs/plugin-legacy';
 import { createHtmlPlugin } from 'vite-plugin-html';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 
@@ -9,6 +8,9 @@ import { viteStaticCopy } from 'vite-plugin-static-copy';
 export default defineConfig(({ mode }) => {
   // Load env file based on `mode` in the current directory
   const env = loadEnv(mode, process.cwd(), '');
+  
+  // Determine if we're in production mode
+  const isProd = mode === 'production';
 
   return {
     // Base public path when served in production
@@ -61,15 +63,12 @@ export default defineConfig(({ mode }) => {
       },
       // Limits for chunk and asset size warnings
       chunkSizeWarningLimit: 1000,
+      // Target modern browsers only - supports BigInt literals
+      target: 'es2020',
     },
     
     // Plugins
     plugins: [
-      // Legacy browsers support
-      legacy({
-        targets: ['>0.25%', 'not IE 11', 'not op_mini all'],
-      }),
-      
       // HTML template handling
       createHtmlPlugin({
         minify: mode === 'production',
@@ -158,8 +157,19 @@ export default defineConfig(({ mode }) => {
     
     // Optimization options
     optimizeDeps: {
-      include: ['phaser'],
-      exclude: []
+      include: [
+        'phaser',
+        '@reown/appkit',
+        '@reown/appkit-adapter-wagmi',
+        '@wagmi/core'
+      ],
+      esbuildOptions: {
+        // Target modern browsers that support BigInt
+        target: 'es2020',
+        supported: {
+          bigint: true
+        }
+      }
     }
   };
 });
