@@ -5,8 +5,8 @@ import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
 import { store, updateStore } from './appkitStore';
 import { updateButtonVisibility } from './dom';
 
-// Create Wagmi adapter
-const projectId = process.env.WALLET_CONNECT_PROJECT_ID;
+// Create Wagmi adapter using Vite environment variables
+const projectId = import.meta.env.VITE_WALLET_CONNECT_PROJECT_ID;
 
 export const wagmiAdapter = new WagmiAdapter({
   projectId,
@@ -217,10 +217,15 @@ export function createWalletButton() {
   };
 }
 
+export function getWalletState() {
+  return store.accountState || null;
+}
+
 export default {
   appKit,
   wagmiAdapter,
   store,
   createWalletButton,
-  initializeSubscribers
+  initializeSubscribers,
+  getWalletState
 };
