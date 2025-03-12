@@ -106,8 +106,7 @@ class Player extends Phaser.Physics.Arcade.Sprite {
     this.setState(Player.CONFIG.STATES.JUMPING);
     this.physicsManager.jump();
     if (!this.scene.intro.isWaiting && this.isOnFloor) {
-      this.scene.events.emit(CONFIG.EVENTS.PLAYER_ACTION);
-    }
+      this.scene.events.emit(CONFIG.EVENTS.PLAYER_ACTION, this, this.scene.score);    }
   }
 
   /**

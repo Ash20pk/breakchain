@@ -9,6 +9,7 @@ import UI from './UI';
 import Intro from './Intro';
 import Player from '../../prefabs/player/Player';
 import Horizon from '../../prefabs/horizon/Horizon';
+import BlockchainManager from './BlockchainManager';
 
 /**
  * Main game scene
@@ -47,6 +48,8 @@ class GameScene extends Phaser.Scene {
       gameObjects: this.onResizeGameObjects.bind(this),
     });
     this.scoreManager = new LocalScoreManager(this.events);
+
+    this.blockchainManager = new BlockchainManager(this.events);
 
     // Register event handlers
     this.events.on(CONFIG.EVENTS.GAME_START, this.onGameStart, this);
@@ -144,6 +147,15 @@ class GameScene extends Phaser.Scene {
    * Handle game start
    */
   onGameStart() {
+    // Check if blockchain server is connected before starting
+    if (this.blockchainManager && !this.blockchainManager.isServerConnected) {
+      // Show message indicating server is required
+      toast.error('Cannot start game', {
+        description: 'Blockchain server connection required'
+      });
+      return; // Prevent game from starting
+    }
+    
     this.isPlaying = true;
     this.isInitialStart = false;
     this.ui.highScorePanel.setScore(this.highScore);

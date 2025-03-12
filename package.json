@@ -28,6 +28,7 @@
     "@walletconnect/utils": "^2.19.0",
     "connectkit": "^1.8.2",
     "phaser": "^3.53.0",
+    "sonner": "^2.0.1",
     "viem": "^2.23.9",
     "wagmi": "^2.14.13"
   },

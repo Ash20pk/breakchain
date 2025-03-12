@@ -96,72 +96,67 @@ export function createWalletButton() {
   // Add CSS for 8-bit style
   const style = document.createElement('style');
   style.textContent = `
-    @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
-    
-    .wallet-container {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      z-index: 1000;
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      gap: 8px;
-    }
-    
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+  
+  .wallet-container {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+  }
+  
+  .pixel-btn {
+    font-family: 'Press Start 2P', monospace;
+    font-size: 12px;
+    padding: 8px 12px;
+    background-color: #fff; /* White background like the game */
+    color: #535353; /* Dark gray text like the high score */
+    border: 2px solid #535353; /* Border to match game elements */
+    cursor: pointer;
+    text-transform: uppercase;
+    image-rendering: pixelated;
+    transition: all 0.1s;
+    box-shadow: 4px 4px 0 #f5f5f5; /* Light shadow for depth */
+    letter-spacing: 1px;
+  }
+  
+  .pixel-btn:hover {
+    transform: translate(2px, 2px);
+    box-shadow: 2px 2px 0 #f5f5f5;
+  }
+  
+  /* Active game style */
+  .pixel-btn:active {
+    transform: translate(4px, 4px);
+    box-shadow: none;
+  }
+  
+  .pixel-btn.disconnect {
+    background-color: #fff;
+    color: #535353;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 10px; /* Smaller font for address */
+  }
+  
+  /* Mobile responsive adjustments */
+  @media (max-width: 600px) {
     .pixel-btn {
-      font-family: 'Press Start 2P', monospace;
-      font-size: 12px;
-      padding: 8px 12px;
-      background-color: #000;
-      color: #fff;
-      border: 4px solid #fff;
-      box-shadow: 4px 4px 0 #000;
-      cursor: pointer;
-      text-transform: uppercase;
-      image-rendering: pixelated;
-      transition: all 0.1s;
-    }
-    
-    .pixel-btn:hover {
-      background-color: #fff;
-      color: #000;
-      box-shadow: 2px 2px 0 #000;
-      transform: translate(2px, 2px);
+      font-size: 8px;
+      padding: 6px 8px;
     }
     
     .pixel-btn.disconnect {
-      background-color: #FF6347;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
+      font-size: 8px;
     }
-    
-    .exit-icon {
-      display: inline-block;
-      width: 12px;
-      height: 12px;
-    }
-    
-    .exit-icon svg {
-      width: 100%;
-      height: 100%;
-    }
-    
-    .exit-icon path {
-      fill: white;
-    }
-    
-    .pixel-btn.disconnect:hover .exit-icon path {
-      fill: black;
-    }
-    
-    .exit-icon {
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M1 1l10 10M1 11L11 1'/%3E%3C/svg%3E");
-      background-size: cover;
-    }
-  `;
+  }
+`;
   document.head.appendChild(style);
 
   // Create container for wallet UI

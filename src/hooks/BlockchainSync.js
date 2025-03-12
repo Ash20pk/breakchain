@@ -1,8 +1,9 @@
-// blockchainSync.js
+// src/hooks/BlockchainSync.js - Updated to enforce server connection
 import { io } from 'socket.io-client';
 import { toast } from 'sonner';
-import { getWalletState, config as wagmiConfig } from '../utils/wallet';
+import { getWalletState } from '../utils/wallet';
 import { signMessage } from '@wagmi/core';
+import { getBlockchainEvents } from '../utils/blockchainEvents';
 
 // Define module variables
 let socket = null;
@@ -38,21 +39,63 @@ export function initialize(config = {}) {
     console.log('WebSocket connected');
     updateState({ ...state, connected: true });
     
-    // If we have an address, authenticate immediately
-    if (config.address) {
-      authenticatePlayer(config.address);
+    // Dispatch connection event
+    const events = getBlockchainEvents();
+    if (events.CONNECTION_CHANGED) {
+      document.dispatchEvent(new CustomEvent(events.CONNECTION_CHANGED, { 
+        detail: { isConnected: true } 
+      }));
     }
+    
+    toast.success('Connected to Blockchain', {
+      description: 'Ready to record game data'
+    });
+    
+    // // If we have an address, authenticate immediately
+    // if (config.address) {
+    //   authenticatePlayer(config.address);
+    // }
   });
   
   socket.on('disconnect', () => {
     console.log('WebSocket disconnected');
     updateState({ 
       ...state, 
-      connected: false
+      connected: false,
+      gameActive: false 
     });
     
+    // Dispatch connection event
+    const events = getBlockchainEvents();
+    if (events.CONNECTION_CHANGED) {
+      document.dispatchEvent(new CustomEvent(events.CONNECTION_CHANGED, { 
+        detail: { isConnected: false } 
+      }));
+    }
+    
     toast.error('Connection to blockchain server lost', {
-      description: 'Trying to reconnect...'
+      description: 'Game paused. Trying to reconnect...'
+    });
+  });
+  
+  socket.on('connect_error', (error) => {
+    console.error('Socket connection error:', error);
+    updateState({ 
+      ...state, 
+      connected: false,
+      gameActive: false
+    });
+    
+    // Dispatch connection event
+    const events = getBlockchainEvents();
+    if (events.CONNECTION_CHANGED) {
+      document.dispatchEvent(new CustomEvent(events.CONNECTION_CHANGED, { 
+        detail: { isConnected: false, error: error.message } 
+      }));
+    }
+    
+    toast.error('Cannot connect to blockchain server', {
+      description: 'Please check that the server is running'
     });
   });
   
@@ -87,6 +130,14 @@ export function initialize(config = {}) {
         toast.info("Jump Recorded", {
           description: `Score: ${data.score} | TX: ${data.hash?.slice(0, 6)}...`
         });
+        
+        // Dispatch jump recorded event
+        const events = getBlockchainEvents();
+        if (events.JUMP_RECORDED) {
+          document.dispatchEvent(new CustomEvent(events.JUMP_RECORDED, { 
+            detail: { hash: data.hash, score: data.score } 
+          }));
+        }
       }
     } else if (data.status === 'failed') {
       toast.error("Transaction Failed", {
@@ -115,6 +166,14 @@ export function initialize(config = {}) {
       gameActive: false
     });
     
+    // Dispatch game end event
+    const events = getBlockchainEvents();
+    if (events.GAME_END) {
+      document.dispatchEvent(new CustomEvent(events.GAME_END, { 
+        detail: data
+      }));
+    }
+    
     if (data.isHighScore) {
       toast.success('New High Score!', {
         description: `Your score of ${data.finalScore} has been recorded on-chain!`
@@ -137,18 +196,26 @@ export function initialize(config = {}) {
     toast.error('Error', {
       description: data.message
     });
+    
+    // Dispatch error event
+    const events = getBlockchainEvents();
+    if (events.ERROR) {
+      document.dispatchEvent(new CustomEvent(events.ERROR, { 
+        detail: data
+      }));
+    }
   });
   
   return {
     getState: () => state,
     subscribe,
-    authenticatePlayer,
     startGame,
     endGame,
     recordJump,
     getLeaderboard,
     reconnect,
-    disconnect
+    disconnect,
+    isConnected: () => state.connected
   };
 }
 
@@ -156,6 +223,14 @@ export function initialize(config = {}) {
 function updateState(newState) {
   state = newState;
   listeners.forEach(listener => listener(state));
+  
+  // Notify UI about transaction count
+  const events = getBlockchainEvents();
+  if (events.TRANSACTION_UPDATED) {
+    document.dispatchEvent(new CustomEvent(events.TRANSACTION_UPDATED, { 
+      detail: { pendingCount: state.pendingTxCount } 
+    }));
+  }
 }
 
 // Subscribe to state changes
@@ -169,46 +244,61 @@ export function subscribe(listener) {
   };
 }
 
-// Authenticate player with wallet signature
-export async function authenticatePlayer(playerAddress) {
-  if (!socket || !playerAddress) return;
+// // Authenticate player with wallet signature
+// export async function authenticatePlayer(playerAddress) {
+//   if (!socket || !playerAddress) return false;
   
-  try {
-    // Create a message to sign
-    const message = `Authenticate Dino Runner game session: ${Date.now()}`;
+//   try {
+//     // Create a message to sign
+//     const message = `Authenticate Dino Runner game session: ${Date.now()}`;
     
-    // Get signature using Wagmi's signMessage
-    const signature = await signMessage(wagmiConfig, {
-      message,
-    });
+//     // Get signature using Wagmi's signMessage
+//     const signature = await signMessage(wagmiConfig, {
+//       message,
+//     });
     
-    // Send authentication request
-    socket.emit('client:auth', {
-      playerAddress,
-      signature,
-      message
-    });
+//     // Send authentication request
+//     socket.emit('client:auth', {
+//       playerAddress,
+//       signature,
+//       message
+//     });
     
-  } catch (err) {
-    console.error('Error authenticating player:', err);
-    toast.error('Authentication failed');
-  }
-}
+//     return true;
+//   } catch (err) {
+//     console.error('Error authenticating player:', err);
+//     toast.error('Authentication failed');
+//     return false;
+//   }
+// }
 
 // Start a new game
 export async function startGame(playerAddress) {
-  if (!socket || !state.connected || !playerAddress) {
-    console.error("Cannot start game:", { 
-      socketExists: !!socket, 
-      connected: state.connected, 
-      addressExists: !!playerAddress 
+  if (!socket) {
+    toast.error('Cannot start game', {
+      description: 'Socket not initialized'
     });
-    throw new Error('Not connected');
+    throw new Error('Socket not initialized');
   }
   
+  if (!state.connected) {
+    toast.error('Cannot start game', {
+      description: 'Not connected to blockchain server'
+    });
+    throw new Error('Not connected to blockchain server');
+  }
+  
+  if (!playerAddress) {
+    toast.error('Cannot start game', {
+      description: 'Wallet not connected'
+    });
+    throw new Error('Wallet not connected');
+  }
+
   // Check if there's already an active game
   if (state.gameActive && state.gameId) {
     console.warn("Attempting to start a new game while another is active");
+    return state.gameId; // Return existing gameId if already active
   }
   
   const gameId = `dino-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
@@ -219,7 +309,7 @@ export async function startGame(playerAddress) {
       let isResolved = false;
       let timeoutId;
       
-      // Add error event handling specifically for SQL errors
+      // Add error event handling
       const handleServerError = (data) => {
         if (isResolved) return;
         
@@ -230,11 +320,7 @@ export async function startGame(playerAddress) {
         isResolved = true;
         if (timeoutId) clearTimeout(timeoutId);
         
-        if (data.message && data.message.includes("unique or exclusion constraint")) {
-          reject(new Error("Database constraint error: You may already have an active game"));
-        } else {
-          reject(new Error(`Server error: ${data.message || 'Unknown error'}`));
-        }
+        reject(new Error(`Server error: ${data.message || 'Unknown error'}`));
       };
       
       // Handler function for game start confirmation
@@ -340,8 +426,14 @@ export async function startGame(playerAddress) {
 
 // Record a jump
 export async function recordJump(playerAddress, height, score) {
-  if (!socket || !state.gameActive || !state.gameId || !playerAddress) {
-    return;
+  if (!socket || !state.connected) {
+    console.warn('Cannot record jump: not connected to server');
+    return false;
+  }
+  
+  if (!state.gameActive || !state.gameId || !playerAddress) {
+    console.warn('Cannot record jump: game not active or wallet not connected');
+    return false;
   }
   
   socket.emit('client:jump', {
@@ -350,12 +442,20 @@ export async function recordJump(playerAddress, height, score) {
     height,
     score
   });
+  
+  return true;
 }
 
 // End the game
 export async function endGame(playerAddress, finalScore, distance) {
-  if (!socket || !state.gameActive || !state.gameId || !playerAddress) {
-    return;
+  if (!socket || !state.connected) {
+    console.warn('Cannot end game: not connected to server');
+    return false;
+  }
+  
+  if (!state.gameActive || !state.gameId || !playerAddress) {
+    console.warn('Cannot end game: game not active or wallet not connected');
+    return false;
   }
   
   socket.emit('client:gameOver', {
@@ -364,21 +464,26 @@ export async function endGame(playerAddress, finalScore, distance) {
     finalScore,
     distance
   });
+  
+  return true;
 }
 
 // Get leaderboard
 export async function getLeaderboard() {
   if (!socket || !state.connected) {
-    return;
+    console.warn('Cannot get leaderboard: not connected to server');
+    return [];
   }
   
   socket.emit('client:getLeaderboard');
+  return state.leaderboard;
 }
 
 // Reconnect to server
 export function reconnect() {
   if (socket) {
     socket.connect();
+    toast.info('Reconnecting to blockchain server...');
   }
 }
 
@@ -392,7 +497,6 @@ export function disconnect() {
 // Export the module functions
 export default {
   initialize,
-  authenticatePlayer,
   startGame,
   endGame,
   recordJump,
@@ -400,5 +504,6 @@ export default {
   reconnect,
   disconnect,
   subscribe,
-  getState: () => state
+  getState: () => state,
+  isConnected: () => state.connected
 };
