@@ -4,7 +4,7 @@ import HighScorePanel from '../../prefabs/ui/score/HighScorePanel';
 import GameOverPanel from '../../prefabs/ui/gameover/GameOverPanel';
 import BlockchainEffects from '../../prefabs/ui/blockchain/BlockchainEffects';
 import BlockchainStatus from '../../prefabs/ui/blockchain/BlockchainStatus';
-import ServerStatusOverlay from '../../prefabs/ui/blockchain/ServerStatusOverlay';
+// import ServerStatusOverlay from '../../prefabs/ui/blockchain/ServerStatusOverlay';
 
 
 /**
@@ -28,7 +28,7 @@ class UI {
     // Blockchain UI components
     this.blockchainStatus = new BlockchainStatus(scene);
     this.blockchainEffects = new BlockchainEffects(scene);
-    this.serverStatusOverlay = new ServerStatusOverlay(scene);
+    // this.serverStatusOverlay = new ServerStatusOverlay(scene);
   }
 
   /**

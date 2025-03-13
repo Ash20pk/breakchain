@@ -77,6 +77,7 @@ class GameScene extends Phaser.Scene {
   }
 
   create() {
+
     this.ui = new UI(this);
     this.intro = new Intro(this.events);
 
@@ -147,14 +148,11 @@ class GameScene extends Phaser.Scene {
    * Handle game start
    */
   onGameStart() {
-    // Check if blockchain server is connected before starting
-    if (this.blockchainManager && !this.blockchainManager.isServerConnected) {
-      // Show message indicating server is required
-      toast.error('Cannot start game', {
-        description: 'Blockchain server connection required'
-      });
-      return; // Prevent game from starting
-    }
+    // // Check if blockchain server is connected before starting
+    // if (this.blockchainManager && !this.blockchainManager.isServerConnected) {
+    //   navigator.vibrate(GameScene.CONFIG.GAMEOVER.VIBRATION);
+    //   return; // Prevent game from starting
+    // }
     
     this.isPlaying = true;
     this.isInitialStart = false;
@@ -322,6 +320,10 @@ class GameScene extends Phaser.Scene {
   onResizeGameObjects(gameSize) {
     this.ui.resize(gameSize);
     this.ground.resize(gameSize);
+
+    if (this.serverStatusOverlay) {
+      this.serverStatusOverlay.resize(gameSize);
+    }
   }
 }
 
