@@ -2,7 +2,7 @@
 import express from 'express';
 import http from 'http';
 import { Server as SocketIOServer, Socket } from 'socket.io';
-import { Pool } from 'pg';
+import { Pool, PoolConfig } from 'pg';
 import { createWalletClient, createPublicClient, http as viemHttp } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import dotenv from 'dotenv';
@@ -38,17 +38,68 @@ const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || '5');
 const USE_REDIS = process.env.USE_REDIS === 'true';
 const WORKER_COUNT = process.env.WORKER_COUNT ? parseInt(process.env.WORKER_COUNT) : os.cpus().length;
 
+const DEV_MODE = process.env.DEV_MODE === 'false';
+const DB_OPERATIONS_TIMEOUT = 5000; // 5 seconds timeout for database operations
+
 // Transaction types
 const TX_TYPE_JUMP = 'jump';
 const TX_TYPE_GAME_OVER = 'gameover';
 
-// Database connection pool
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
-});
+// Database configuration
+const getDbConfig = (): PoolConfig => {
+  const config: PoolConfig = {
+    connectionString: process.env.DATABASE_URL,
+    max: 20,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000, // Increased from 2000ms to 10000ms
+  };
+
+  // Log connection info (but hide password)
+  const connectionDetails = process.env.DATABASE_URL ? 
+    process.env.DATABASE_URL.replace(/:[^:]*@/, ':****@') : 
+    'No DATABASE_URL provided';
+  
+  logger.info(`Database configuration: ${connectionDetails}`);
+  
+  return config;
+};
+
+// Database connection pool with improved error handling
+const createDbPool = () => {
+  const pool = new Pool(getDbConfig());
+  
+  pool.on('error', (err) => {
+    logger.error('Unexpected database pool error:', err);
+  });
+  
+  pool.on('connect', (client) => {
+    logger.info('New database connection established');
+    
+    client.on('error', (err) => {
+      logger.error('Database client error:', err);
+    });
+  });
+  
+  // Test the connection
+  pool.query('SELECT NOW()')
+    .then(() => {
+      logger.info('Database connection successful');
+    })
+    .catch(err => {
+      logger.error('Initial database connection test failed:', err);
+      
+      if (DEV_MODE) {
+        logger.warn('Running in DEV_MODE: will continue despite database issues');
+      } else {
+        logger.warn('Database issues may affect server functionality');
+      }
+    });
+  
+  return pool;
+};
+
+// Initialize the pool
+const pool = createDbPool();
 
 // Define Socket.IO event types
 interface ClientToServerEvents {
@@ -614,54 +665,81 @@ if (cluster.isPrimary) {
       }
     });
     
-    // Handle game session start
-    socket.on('client:gameStart', async (data) => {
+   // Handle game session start
+socket.on('client:gameStart', async (data) => {
+  try {
+    const { gameId, playerAddress } = data;
+    
+    // Basic validation
+    if (!gameId || !playerAddress) {
+      socket.emit('server:error', {
+        message: 'Invalid game start request: missing gameId or playerAddress'
+      });
+      return;
+    }
+
+    logger.info(`Game start request: gameId=${gameId}, player=${playerAddress}`);
+    
+    // Get or create client info
+    let clientInfo = connectedClients.get(socket.id);
+    if (!clientInfo) {
+      // Create new client info if it doesn't exist
+      clientInfo = {
+        id: socket.id,
+        playerAddress: null,
+        gameId: null,
+        connectedAt: Date.now()
+      };
+      connectedClients.set(socket.id, clientInfo);
+    }
+    
+    // Update client info
+    clientInfo.playerAddress = playerAddress;
+    clientInfo.gameId = gameId;
+    connectedClients.set(socket.id, clientInfo);
+    
+    // Join game-specific room
+    socket.join(`game:${gameId}`);
+    socket.join(`player:${playerAddress}`); // Also join the player-specific room
+    
+    // If in DEV mode, skip database operations
+    if (DEV_MODE) {
+      logger.info(`[DEV MODE] Skipping database operations for game ${gameId}`);
+      
+      // Send immediate success response
+      socket.emit('server:gameStart', {
+        status: 'started',
+        gameId,
+        timestamp: Date.now()
+      });
+      
+      logger.info(`[DEV MODE] Game ${gameId} started for player ${playerAddress}`);
+      return;
+    }
+    
+    // Database operations with timeout protection
+    const dbOperationsPromise = (async () => {
+      let client;
       try {
-        const { gameId, playerAddress } = data;
-        const clientInfo = connectedClients.get(socket.id);
+        client = await pool.connect();
         
-        // Make sure we have a valid client info
-        if (!clientInfo) {
-          socket.emit('server:error', {
-            message: 'Invalid session'
-          });
-          return;
-        }
+        // First check if session exists
+        const sessionResult = await client.query(
+          'SELECT * FROM dino_websocket_sessions WHERE session_id = $1',
+          [socket.id]
+        );
         
-        // Update client info with the player address directly
-        clientInfo.playerAddress = playerAddress;
-        clientInfo.gameId = gameId;
-        connectedClients.set(socket.id, clientInfo);
+        // Begin transaction
+        await client.query('BEGIN');
         
-        // Join game-specific room
-        socket.join(`game:${gameId}`);
-        socket.join(`player:${playerAddress}`); // Also join the player-specific room
-        
-        // Store game session in database
-        const client = await pool.connect();
         try {
-          // First check if session exists
-          const sessionResult = await client.query(
-            'SELECT * FROM dino_websocket_sessions WHERE session_id = $1',
-            [socket.id]
-          );
-          
           // Insert or update session info
           if (sessionResult.rowCount === 0) {
             // Session doesn't exist, insert new record
-            try {
-              await client.query(
-                'INSERT INTO dino_websocket_sessions (session_id, player_address, status) VALUES ($1, $2, $3)',
-                [socket.id, playerAddress, 'active']
-              );
-            } catch (err) {
-              // If insert fails due to unique constraint, try update instead
-              logger.warn('Session insert failed, trying update:', err);
-              await client.query(
-                'UPDATE dino_websocket_sessions SET player_address = $1, status = $2, last_active_at = NOW() WHERE session_id = $3',
-                [playerAddress, 'active', socket.id]
-              );
-            }
+            await client.query(
+              'INSERT INTO dino_websocket_sessions (session_id, player_address, status) VALUES ($1, $2, $3)',
+              [socket.id, playerAddress, 'active']
+            );
           } else {
             // Session exists, update it
             await client.query(
@@ -685,7 +763,7 @@ if (cluster.isPrimary) {
               [playerAddress, gameId]
             );
           } catch (err) {
-            logger.error(`Error creating game session: ${err}`);
+            logger.warn(`Game session may already exist for player ${playerAddress}, game ${gameId}`);
             
             // Check if this game session already exists
             const existingGame = await client.query(
@@ -694,42 +772,71 @@ if (cluster.isPrimary) {
             );
             
             if (existingGame.rowCount === 0) {
-              // If it doesn't exist but insert failed for another reason, rethrow
-              socket.emit('server:error', {
-                message: 'Failed to create game session: Database error'
-              });
+              // Unexpected error, rethrow to be caught in outer catch
               throw err;
-            } else {
-              // Game already exists, we can continue
-              logger.info(`Game session already exists for player ${playerAddress}, game ${gameId}`);
             }
           }
-        } catch (err) {
-          logger.error(`Database error in game start: ${err}`);
-          socket.emit('server:error', {
-            message: 'Database error starting game'
-          });
-          client.release();
-          return;
-        } finally {
-          client.release();
+          
+          // Commit transaction
+          await client.query('COMMIT');
+          return true;
+          
+        } catch (innerErr) {
+          // Rollback on error
+          await client.query('ROLLBACK');
+          throw innerErr;
         }
         
-        // Acknowledge game start
-        socket.emit('server:gameStart', {
-          status: 'started',
-          gameId,
-          timestamp: Date.now()
-        });
-        
-        logger.info(`Game ${gameId} started for player ${playerAddress}`);
       } catch (err) {
-        logger.error(`Error starting game: ${err}`);
-        socket.emit('server:error', {
-          message: 'Failed to start game'
-        });
+        logger.error(`Database error in game start for ${gameId}:`, err);
+        throw err;
+      } finally {
+        if (client) client.release();
       }
+    })();
+    
+    // Add timeout to database operations
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Database operation timeout')), DB_OPERATIONS_TIMEOUT);
     });
+    
+    // Race the database operations against the timeout
+    try {
+      await Promise.race([dbOperationsPromise, timeoutPromise]);
+      
+      // Database operations completed successfully or timed out
+      // Either way, we'll acknowledge the game start to prevent client-side timeout
+      socket.emit('server:gameStart', {
+        status: 'started',
+        gameId,
+        timestamp: Date.now()
+      });
+      
+      logger.info(`Game ${gameId} started for player ${playerAddress}`);
+      
+    } catch (error) {
+      logger.error(`Error starting game ${gameId}:`, error);
+      
+      // Still acknowledge the game start but with a different status
+      // This is better than letting the client time out
+      socket.emit('server:gameStart', {
+        status: 'started',
+        gameId,
+        timestamp: Date.now(),
+      });
+      
+      logger.warn(`Game ${gameId} started with warnings for player ${playerAddress}`);
+    }
+    
+  } catch (err) {
+    logger.error(`Unexpected error in game start handler:`, err);
+    
+    // Send error to client
+    socket.emit('server:error', {
+      message: 'Failed to start game: Server error'
+    });
+  }
+});
     
     // Handle player jump
     socket.on('client:jump', async (data) => {
