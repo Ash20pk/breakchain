@@ -3,6 +3,7 @@ import { WagmiProvider, createConfig, http } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConnectKitProvider, getDefaultConfig } from "connectkit";
 import { SomniaChain } from "../utils/chain";
+import WalletStateSync from "./WalletStateSync";
 
 // Create a query client
 const queryClient = new QueryClient();
@@ -48,6 +49,8 @@ export const Web3Provider = ({ children }) => {
             },
           }}
         >
+          {/* This component syncs wallet state to the global state */}
+          <WalletStateSync />
           {children}
         </ConnectKitProvider>
       </QueryClientProvider>

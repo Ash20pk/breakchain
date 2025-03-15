@@ -20,6 +20,8 @@ class BlockchainManager {
     this.isGameActive = false;
     this.currentGameId = null;
     this.isServerConnected = false;
+    this.walletAddress = null;
+    this.walletConnected = false;
 
     // Register event handlers
     try {
@@ -40,6 +42,44 @@ class BlockchainManager {
         this.pauseGame();
       }
     });
+    
+    // Listen for wallet state changes
+    document.addEventListener('WALLET_STATE_CHANGED', this.handleWalletStateChanged.bind(this));
+    
+    // Initialize wallet state
+    this.updateWalletState();
+    
+    console.log('BlockchainManager initialized');
+  }
+  
+  /**
+   * Handle wallet state changes
+   * @param {CustomEvent} event - Wallet state change event
+   */
+  handleWalletStateChanged(event) {
+    const { address, isConnected } = event.detail;
+    console.log('Wallet state changed in BlockchainManager:', { address, isConnected });
+    
+    // Update local state
+    this.walletAddress = address;
+    this.walletConnected = isConnected;
+    
+    // Handle wallet disconnection during gameplay
+    if (!isConnected && this.isGameActive) {
+      console.warn('Wallet disconnected during gameplay');
+      // Optional: you could pause the game here
+    }
+  }
+  
+  /**
+   * Update wallet state from the current global state
+   */
+  updateWalletState() {
+    const walletState = getWalletState();
+    if (walletState) {
+      this.walletAddress = walletState.address;
+      this.walletConnected = walletState.isConnected;
+    }
   }
 
   /**
@@ -47,8 +87,14 @@ class BlockchainManager {
    * @returns {boolean}
    */
   isWalletConnected() {
-    const walletState = getWalletState();
-    return walletState && walletState.isConnected && walletState.address;
+    // First check local state
+    if (this.walletConnected && this.walletAddress) {
+      return true;
+    }
+    
+    // If not connected, update from global state and check again
+    this.updateWalletState();
+    return this.walletConnected && this.walletAddress;
   }
 
   /**
@@ -56,8 +102,14 @@ class BlockchainManager {
    * @returns {string|null}
    */
   getWalletAddress() {
-    const walletState = getWalletState();
-    return walletState && walletState.address ? walletState.address : null;
+    // First check local state
+    if (this.walletAddress) {
+      return this.walletAddress;
+    }
+    
+    // If no address, update from global state and return
+    this.updateWalletState();
+    return this.walletAddress;
   }
   
   /**
@@ -112,7 +164,7 @@ class BlockchainManager {
       }
       
       const address = this.getWalletAddress();
-      console.log('Starting game with blockchain recording');
+      console.log('Starting game with blockchain recording for address:', address);
       
       const gameId = await this.blockchainSync.startGame(address);
       if (gameId) {

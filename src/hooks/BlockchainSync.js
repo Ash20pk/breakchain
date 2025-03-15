@@ -1,8 +1,7 @@
-// src/hooks/BlockchainSync.js - Updated to enforce server connection
+// src/hooks/BlockchainSync.js - Updated to handle wallet state changes
 import { io } from 'socket.io-client';
 import { toast } from 'sonner';
 import { getWalletState } from '../utils/wallet';
-import { signMessage } from '@wagmi/core';
 import { getBlockchainEvents } from '../utils/blockchainEvents';
 
 // Define module variables
@@ -20,7 +19,7 @@ let listeners = [];
 
 // Initialize WebSocket connection
 export function initialize(config = {}) {
-  // Get wallet state if available
+  // Get wallet state if available - using updated getWalletState
   const walletState = getWalletState();
   if (walletState && walletState.address) {
     config.address = walletState.address;
@@ -50,11 +49,6 @@ export function initialize(config = {}) {
     toast.success('Connected to Blockchain', {
       description: 'Ready to record game data'
     });
-    
-    // // If we have an address, authenticate immediately
-    // if (config.address) {
-    //   authenticatePlayer(config.address);
-    // }
   });
   
   socket.on('disconnect', () => {
@@ -206,6 +200,17 @@ export function initialize(config = {}) {
     }
   });
   
+  // Listen for wallet state changes to update connections if needed
+  document.addEventListener('WALLET_STATE_CHANGED', (event) => {
+    // If wallet disconnects, we might want to handle that here
+    const { address, isConnected } = event.detail;
+    
+    if (!isConnected && state.gameActive) {
+      console.warn('Wallet disconnected during active game');
+      // Handle disconnection during active game
+    }
+  });
+  
   return {
     getState: () => state,
     subscribe,
@@ -243,34 +248,6 @@ export function subscribe(listener) {
     listeners = listeners.filter(l => l !== listener);
   };
 }
-
-// // Authenticate player with wallet signature
-// export async function authenticatePlayer(playerAddress) {
-//   if (!socket || !playerAddress) return false;
-  
-//   try {
-//     // Create a message to sign
-//     const message = `Authenticate Dino Runner game session: ${Date.now()}`;
-    
-//     // Get signature using Wagmi's signMessage
-//     const signature = await signMessage(wagmiConfig, {
-//       message,
-//     });
-    
-//     // Send authentication request
-//     socket.emit('client:auth', {
-//       playerAddress,
-//       signature,
-//       message
-//     });
-    
-//     return true;
-//   } catch (err) {
-//     console.error('Error authenticating player:', err);
-//     toast.error('Authentication failed');
-//     return false;
-//   }
-// }
 
 // Start a new game
 export async function startGame(playerAddress) {
