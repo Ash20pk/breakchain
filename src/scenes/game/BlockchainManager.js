@@ -1,8 +1,7 @@
-// src/scenes/game/BlockchainManager.js
+// src/scenes/game/BlockchainManager.js - With Dev Mode Support
 import BlockchainSync from '../../hooks/BlockchainSync';
-import { getWalletState } from '../../utils/wallet';
+import { getWalletState } from '../../utils/WalletBridge';
 import CONFIG from '../../config/game';
-import { safeEmit } from '../../utils/blockchainEvents';
 import { toast } from 'sonner';
 
 /**
@@ -15,6 +14,11 @@ class BlockchainManager {
    * @param {Phaser.Events.EventEmitter} eventEmitter - The game EventEmitter
    */
   constructor(eventEmitter) {
+    // Always enable debugging
+    this.debug = true;
+    
+    if (this.debug) console.log('BlockchainManager: Constructor called');
+    
     this.eventEmitter = eventEmitter;
     this.blockchainSync = BlockchainSync.initialize();
     this.isGameActive = false;
@@ -22,53 +26,40 @@ class BlockchainManager {
     this.isServerConnected = false;
     this.walletAddress = null;
     this.walletConnected = false;
-
+    this.lastError = null;
+    
     // Register event handlers
-    try {
-      this.eventEmitter.on(CONFIG.EVENTS.GAME_START, this.onGameStart, this);
-      this.eventEmitter.on(CONFIG.EVENTS.GAME_OVER, this.onGameOver, this);
-      this.eventEmitter.on(CONFIG.EVENTS.PLAYER_ACTION, this.onPlayerJump, this);
-    } catch (error) {
-      console.error('Error registering blockchain event handlers:', error);
-    }
+    if (this.debug) console.log('BlockchainManager: Registering event handlers');
+    
+    this.eventEmitter.on(CONFIG.EVENTS.GAME_START, this.onGameStart, this);
+    this.eventEmitter.on(CONFIG.EVENTS.GAME_OVER, this.onGameOver, this);
+    this.eventEmitter.on(CONFIG.EVENTS.GAME_RESTART, this.onGameStart, this); // Use same handler for restart
+    this.eventEmitter.on(CONFIG.EVENTS.PLAYER_ACTION, this.onPlayerJump, this);
     
     // Listen for blockchain connection changes
     document.addEventListener('BLOCKCHAIN_CONNECTION_CHANGED', (event) => {
       this.isServerConnected = event.detail.isConnected;
-      console.log(`Blockchain server connection changed: ${this.isServerConnected}`);
-      
-      if (!this.isServerConnected && this.isGameActive) {
-        // If server disconnects during gameplay, pause the game
-        this.pauseGame();
-      }
+      if (this.debug) console.log(`BlockchainManager: Server connection changed: ${this.isServerConnected}`);
     });
     
     // Listen for wallet state changes
-    document.addEventListener('WALLET_STATE_CHANGED', this.handleWalletStateChanged.bind(this));
+    document.addEventListener('WALLET_STATE_CHANGED', (event) => {
+      this.walletAddress = event.detail.address;
+      this.walletConnected = event.detail.isConnected;
+      if (this.debug) console.log(`BlockchainManager: Wallet state changed:`, event.detail);
+    });
     
     // Initialize wallet state
     this.updateWalletState();
     
-    console.log('BlockchainManager initialized');
-  }
-  
-  /**
-   * Handle wallet state changes
-   * @param {CustomEvent} event - Wallet state change event
-   */
-  handleWalletStateChanged(event) {
-    const { address, isConnected } = event.detail;
-    console.log('Wallet state changed in BlockchainManager:', { address, isConnected });
+    // Check server connection (initial)
+    this.isServerConnected = this.blockchainSync.isConnected();
     
-    // Update local state
-    this.walletAddress = address;
-    this.walletConnected = isConnected;
-    
-    // Handle wallet disconnection during gameplay
-    if (!isConnected && this.isGameActive) {
-      console.warn('Wallet disconnected during gameplay');
-      // Optional: you could pause the game here
-    }
+    if (this.debug) console.log('BlockchainManager: Initialized with state:', {
+      isServerConnected: this.isServerConnected,
+      walletAddress: this.walletAddress,
+      walletConnected: this.walletConnected
+    });
   }
   
   /**
@@ -79,110 +70,60 @@ class BlockchainManager {
     if (walletState) {
       this.walletAddress = walletState.address;
       this.walletConnected = walletState.isConnected;
+      if (this.debug) console.log('BlockchainManager: Wallet state updated:', walletState);
     }
   }
 
   /**
-   * Check if wallet is connected
-   * @returns {boolean}
-   */
-  isWalletConnected() {
-    // First check local state
-    if (this.walletConnected && this.walletAddress) {
-      return true;
-    }
-    
-    // If not connected, update from global state and check again
-    this.updateWalletState();
-    return this.walletConnected && this.walletAddress;
-  }
-
-  /**
-   * Get wallet address
-   * @returns {string|null}
-   */
-  getWalletAddress() {
-    // First check local state
-    if (this.walletAddress) {
-      return this.walletAddress;
-    }
-    
-    // If no address, update from global state and return
-    this.updateWalletState();
-    return this.walletAddress;
-  }
-  
-  /**
-   * Check if server is connected and wallet is available
-   * @returns {boolean}
-   */
-  canStartGame() {
-    if (!this.isServerConnected) {
-      toast.error('Cannot start game', {
-        description: 'Not connected to blockchain server'
-      });
-      return false;
-    }
-    
-    if (!this.isWalletConnected()) {
-      toast.error('Cannot start game', {
-        description: 'Please connect your wallet first'
-      });
-      return false;
-    }
-    
-    return true;
-  }
-  
-  /**
-   * Pause the game due to server disconnect
-   */
-  pauseGame() {
-    if (this.isGameActive) {
-      // Emit game over event to stop gameplay
-      this.eventEmitter.emit(CONFIG.EVENTS.GAME_OVER);
-      
-      toast.error('Game paused', {
-        description: 'Connection to blockchain server lost'
-      });
-      
-      this.isGameActive = false;
-      this.currentGameId = null;
-    }
-  }
-
-  /**
-   * Handle game start
+   * Handle game start/restart - this is the key function
    */
   async onGameStart() {
+    console.log('BlockchainManager: GAME_START/RESTART event received');
+    
     try {
-      // Check if server and wallet are ready
-      if (!this.canStartGame()) {
-        // Prevent game from starting by emitting game over
-        this.eventEmitter.emit(CONFIG.EVENTS.GAME_OVER);
-        return;
+      // Always reset state on game start/restart
+      this.isGameActive = false;
+      this.currentGameId = null;
+      this.lastError = null;
+      
+      // Update connection states
+      this.isServerConnected = this.blockchainSync.isConnected();
+      this.updateWalletState();
+      
+      console.log('BlockchainManager: Current state before starting game:', {
+        isServerConnected: this.isServerConnected,
+        walletAddress: this.walletAddress,
+        walletConnected: this.walletConnected
+      });
+      
+      // In real mode, we'd check these requirements strictly
+      // In DEV mode, we'll just log warnings but continue
+      if (!this.walletConnected || !this.walletAddress) {
+        console.warn('BlockchainManager: Starting game with no wallet connection');
       }
       
-      const address = this.getWalletAddress();
-      console.log('Starting game with blockchain recording for address:', address);
+      // Start a new game with blockchain
+      console.log(`BlockchainManager: Starting blockchain game with address: ${this.walletAddress}`);
       
-      const gameId = await this.blockchainSync.startGame(address);
+      const gameId = await this.blockchainSync.startGame(this.walletAddress);
+      
       if (gameId) {
         this.isGameActive = true;
         this.currentGameId = gameId;
-        console.log(`Game started with ID: ${gameId}`);
+        console.log(`BlockchainManager: Game successfully started with ID: ${gameId}`);
+        
+        // Log the final state
+        console.log('BlockchainManager: State after game start:', {
+          isGameActive: this.isGameActive,
+          currentGameId: this.currentGameId
+        });
       } else {
-        // If game ID is not returned, prevent game from starting
-        this.eventEmitter.emit(CONFIG.EVENTS.GAME_OVER);
-        toast.error('Failed to start blockchain recording');
+        console.error('BlockchainManager: Failed to get game ID');
+        this.lastError = 'Failed to get game ID from blockchain';
       }
     } catch (error) {
-      console.error('Failed to start blockchain recording:', error);
-      // Prevent game from starting by emitting game over
-      this.eventEmitter.emit(CONFIG.EVENTS.GAME_OVER);
-      toast.error('Cannot start game', {
-        description: error.message || 'Blockchain server error'
-      });
+      console.error('BlockchainManager: Error starting game:', error);
+      this.lastError = error.message;
     }
   }
 
@@ -191,30 +132,44 @@ class BlockchainManager {
    * @param {number} finalScore - Final game score
    */
   async onGameOver(finalScore) {
+    console.log(`BlockchainManager: GAME_OVER event with score: ${finalScore}`);
+    
     try {
-      const address = this.getWalletAddress();
-      if (!this.isGameActive || !address) return;
-
-      console.log(`Recording final score: ${finalScore}`);
-      const success = await this.blockchainSync.endGame(address, finalScore, finalScore);
-      
-      if (success && CONFIG.EVENTS.BLOCKCHAIN) {
-        // Emit event for visual effects
-        try {
-          this.eventEmitter.emit(CONFIG.EVENTS.BLOCKCHAIN.GAME_END, {
-            gameId: this.currentGameId,
-            finalScore,
-            distance: finalScore
-          });
-        } catch (error) {
-          console.error('Error emitting game end event:', error);
-        }
+      // Skip if not in active game - but in DEV mode, we'll show a warning only
+      if (!this.isGameActive || !this.currentGameId) {
+        console.warn('BlockchainManager: Game over called when not in active game:', {
+          isGameActive: this.isGameActive,
+          currentGameId: this.currentGameId
+        });
       }
       
+      // Skip if no wallet - but in DEV mode, we'll show a warning only
+      if (!this.walletAddress) {
+        console.warn('BlockchainManager: Game over called with no wallet address');
+      }
+
+      // If we have an active game and wallet, record the score
+      if (this.isGameActive && this.currentGameId && this.walletAddress) {
+        console.log(`BlockchainManager: Recording final score: ${finalScore} for game ${this.currentGameId}`);
+        
+        await this.blockchainSync.endGame(
+          this.walletAddress, 
+          finalScore, 
+          finalScore
+        );
+      }
+      
+      // Reset state
       this.isGameActive = false;
       this.currentGameId = null;
+      
+      console.log('BlockchainManager: Game end recorded, state reset');
     } catch (error) {
-      console.error('Failed to record game end:', error);
+      console.error('BlockchainManager: Error ending game:', error);
+      
+      // Reset state even on error
+      this.isGameActive = false;
+      this.currentGameId = null;
     }
   }
 
@@ -223,29 +178,44 @@ class BlockchainManager {
    */
   async onPlayerJump(player, currentScore) {
     try {
-      const address = this.getWalletAddress();
-      if (!this.isGameActive || !address || !this.isServerConnected) return;
+      // Log debug info
+      if (this.debug) {
+        console.log('BlockchainManager: PLAYER_ACTION event with state:', {
+          isGameActive: this.isGameActive,
+          currentGameId: this.currentGameId,
+          walletAddress: this.walletAddress,
+          isServerConnected: this.isServerConnected
+        });
+      }
+      
+      // Skip if not in active game
+      if (!this.isGameActive || !this.currentGameId) {
+        if (this.lastError) {
+          console.warn(`BlockchainManager: Cannot record jump - not in active game (Error: ${this.lastError})`);
+        } else {
+          console.warn('BlockchainManager: Cannot record jump - not in active game');
+        }
+        return;
+      }
+      
+      // Skip if no wallet address
+      if (!this.walletAddress) {
+        console.warn('BlockchainManager: Cannot record jump - no wallet address');
+        return;
+      }
 
-      // Estimate jump height from player velocity (a negative value indicates upward movement)
+      // Estimate jump height from player velocity
       const jumpHeight = Math.abs(player?.body?.velocity?.y) || 1800;
       
-      console.log(`Recording jump with height: ${jumpHeight}, score: ${currentScore}`);
-      const success = await this.blockchainSync.recordJump(address, jumpHeight, currentScore);
+      if (this.debug) console.log(`BlockchainManager: Recording jump with height: ${jumpHeight}, score: ${currentScore}`);
       
-      if (success && CONFIG.EVENTS.BLOCKCHAIN) {
-        // Emit event for visual effects
-        try {
-          this.eventEmitter.emit(CONFIG.EVENTS.BLOCKCHAIN.JUMP_RECORDED, {
-            player,
-            jumpHeight,
-            score: currentScore
-          });
-        } catch (error) {
-          console.error('Error emitting jump recorded event:', error);
-        }
-      }
+      await this.blockchainSync.recordJump(
+        this.walletAddress, 
+        jumpHeight, 
+        currentScore
+      );
     } catch (error) {
-      console.error('Failed to record jump:', error);
+      console.error('BlockchainManager: Error recording jump:', error);
     }
   }
 }

@@ -24,7 +24,7 @@ class BootScene extends Phaser.Scene {
     this.load.bitmapFont(
       'joystix',
       'assets/fonts/joystix_monospace.png',
-      'assets/fonts/joystix_monospace.fnt',
+      'assets/fonts/joystix_monospace.xml',
     );
 
     this.load.audio('player-action', 'assets/sounds/player-action.mp3');

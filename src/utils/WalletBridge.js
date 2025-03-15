@@ -1,7 +1,7 @@
 // src/utils/WalletBridge.js
-// This file acts as a bridge between the React wallet state and Phaser components
+// Bridge between React wallet state and Phaser components
 
-// Global variable to store current wallet state (accessible to both React and Phaser)
+// Global variable to store current wallet state
 window.globalWalletState = window.globalWalletState || {
     address: null,
     isConnected: false
@@ -33,11 +33,11 @@ window.globalWalletState = window.globalWalletState || {
    * Gets the current wallet state (can be called from Phaser or React)
    * @returns {Object} Current wallet state
    */
-  export function getGlobalWalletState() {
+  export function getWalletState() {
     return window.globalWalletState;
   }
   
   export default {
     updateGlobalWalletState,
-    getGlobalWalletState
+    getWalletState
   };
