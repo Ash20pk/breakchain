@@ -79,13 +79,41 @@
   margin-bottom: 20px;
 }
 
-.dino-placeholder {
-  width: 40px;
-  height: 40px;
+/* Empty State with Blinking Dino */
+.empty-container {
+  padding: 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.no-scores {
+  font-size: 14px;
+  color: #535353;
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+.empty-message {
+  font-size: 10px;
+  color: #757575;
+  margin-top: 10px;
+  text-align: center;
+}
+
+.dino-blinking {
+  width: 88px;
+  height: 94px;
   background-image: url('/assets/sprites/dino-atlas.png');
-  background-position: -848px -2px;
   background-repeat: no-repeat;
-  margin: 20px 0;
+  margin: 20px auto;
+  background-position: -397px -27px;
+  animation: dinoBlinking 3s steps(1) infinite;
+}
+
+@keyframes dinoBlinking {
+  0%, 95% { background-position: -397px -27px; } /* Eyes open - most of the time */
+  95%, 100% { background-position: -487px -27px; } /* Eyes closed - brief blink */
 }
 
 /* Table Styles */

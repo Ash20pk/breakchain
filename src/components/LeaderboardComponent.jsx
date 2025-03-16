@@ -143,7 +143,7 @@ const Leaderboard = () => {
         <h2>TOP SCORES</h2>
         <div className="empty-container">
           <p className="no-scores">No scores recorded yet. Be the first!</p>
-          <div className="dino-placeholder"></div>
+          <div className="dino-blinking"></div>
         </div>
         <p className="blockchain-note">
           All scores are permanently recorded on the Somnia blockchain
