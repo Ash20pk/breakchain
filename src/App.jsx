@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+// src/App.jsx - Optimized for mobile
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useAccount } from 'wagmi';
 import { ConnectKitButton } from 'connectkit';
 import { toast, Toaster } from 'sonner';
@@ -6,25 +7,52 @@ import './App.css';
 import Game from './Game';
 import config from './config';
 import Leaderboard from './components/LeaderboardComponent';
+import MobileControls from './components/MobileControls';
 
 function App() {
   const [gameStarted, setGameStarted] = useState(false);
   const [loadingGame, setLoadingGame] = useState(false);
   const [showIntro, setShowIntro] = useState(true);
-  const [isLoading, setIsLoading] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const [introProgress, setIntroProgress] = useState(0);
   
   const gameContainerRef = useRef(null);
   const { address, isConnected } = useAccount();
 
+  // Check if we're on a mobile device
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(
+        window.innerWidth <= 768 || 
+        ('ontouchstart' in window) || 
+        (navigator.maxTouchPoints > 0)
+      );
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    
+    // Apply viewport fix for iOS Safari
+    const viewportMeta = document.createElement('meta');
+    viewportMeta.name = 'viewport';
+    viewportMeta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';
+    document.head.appendChild(viewportMeta);
+    
+    return () => {
+      window.removeEventListener('resize', checkMobile);
+      document.head.removeChild(viewportMeta);
+    };
+  }, []);
+
   // Toggle leaderboard view
-  const toggleLeaderboard = () => {
+  const toggleLeaderboard = useCallback(() => {
     setShowLeaderboard(!showLeaderboard);
     playButtonSound();
-  };
+  }, [showLeaderboard]);
 
   // Handle button sounds
-  const playButtonSound = () => {
+  const playButtonSound = useCallback(() => {
     try {
       const sound = new Audio('/assets/sounds/player-action.mp3');
       sound.volume = 0.3;
@@ -32,9 +60,36 @@ function App() {
     } catch (error) {
       console.log('Error playing sound:', error);
     }
-  };
+  }, []);
   
-  const [introProgress, setIntroProgress] = useState(0);
+  // Handle jump from mobile controls
+  const handleJump = useCallback(() => {
+    // Send keypress event to the game
+    const event = new KeyboardEvent('keydown', {
+      code: 'Space',
+      key: ' ',
+      which: 32,
+      keyCode: 32,
+      bubbles: true
+    });
+    document.dispatchEvent(event);
+    
+    // Play sound for mobile feedback
+    playButtonSound();
+  }, [playButtonSound]);
+  
+  // Handle duck from mobile controls
+  const handleDuck = useCallback(() => {
+    // Send keypress event to the game
+    const event = new KeyboardEvent('keydown', {
+      code: 'ArrowDown',
+      key: 'ArrowDown',
+      which: 40,
+      keyCode: 40,
+      bubbles: true
+    });
+    document.dispatchEvent(event);
+  }, []);
 
   // Show intro animation with smooth transition
   useEffect(() => {
@@ -67,7 +122,7 @@ function App() {
   }, [showIntro]);
 
   // Initialize the game
-  const startGame = () => {
+  const startGame = useCallback(() => {
     if (gameStarted) return;
     
     playButtonSound();
@@ -91,14 +146,17 @@ function App() {
         });
       }
     }, 2000);
-  };
+  }, [gameStarted, playButtonSound]);
 
-  // If the game has started, just show the game container
+  // If the game has started, just show the game container with mobile controls
   if (gameStarted) {
     return (
-      <div className="game-container" ref={gameContainerRef}>
-        <Toaster position="top-right" richColors />
-      </div>
+      <>
+        <div className="game-container" ref={gameContainerRef}>
+          <Toaster position="top-right" richColors />
+        </div>
+        <MobileControls onJump={handleJump} onDuck={handleDuck} />
+      </>
     );
   }
 
@@ -125,7 +183,18 @@ function App() {
 
   return (
     <div className="app-container">
-      <Toaster position="top-right" richColors />
+      <Toaster 
+        position={isMobile ? "bottom-center" : "top-right"} 
+        richColors 
+        closeButton={true}
+        toastOptions={{
+          duration: isMobile ? 3000 : 5000,
+          style: {
+            fontSize: isMobile ? '12px' : '14px',
+            maxWidth: isMobile ? '90vw' : '380px'
+          }
+        }}
+      />
       
       <div className="game-title">
         <h1>DINO RUNNER</h1>
@@ -183,22 +252,34 @@ function App() {
               <button 
                 className="pixel-button leaderboard-button"
                 onClick={toggleLeaderboard}
-                disabled={isLoading}
               >
                 VIEW LEADERBOARD
               </button>
             </div>
           </div>
           
-          {/* Game instructions - only shown on main screen, hidden when leaderboard is visible */}
+          {/* Game instructions - with mobile/desktop differences */}
           <div className="instructions">
             <h3>HOW TO PLAY</h3>
-            <ul>
-              <li>Press <span className="key">SPACE</span> or <span className="key">↑</span> to jump</li>
-              <li>Press <span className="key">↓</span> to duck</li>
-              <li>Avoid obstacles and survive as long as possible</li>
-              <li>Your jumps and score will be recorded on the blockchain</li>
-            </ul>
+            
+            <div className="desktop-instructions">
+              <ul>
+                <li>Press <span className="key">SPACE</span> or <span className="key">↑</span> to jump</li>
+                <li>Press <span className="key">↓</span> to duck</li>
+                <li>Avoid obstacles and survive as long as possible</li>
+                <li>Your jumps and score will be recorded on the blockchain</li>
+              </ul>
+            </div>
+            
+            <div className="mobile-instructions">
+              <ul>
+                <li>Tap the screen to jump</li>
+                <li>Swipe up to jump</li>
+                <li>Swipe down to duck</li>
+                <li>Avoid obstacles and survive as long as possible</li>
+                <li>Your score will be recorded on the blockchain</li>
+              </ul>
+            </div>
           </div>
         </>
       )}

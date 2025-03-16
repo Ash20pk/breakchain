@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+// src/components/LeaderboardComponent.jsx - Optimized for mobile
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { createPublicClient, http } from 'viem';
 import { SomniaChain } from '../utils/chain';
 import { DinoRunnerABI } from './abi/DinoRunnerABI';
-import './Leaderboard.css';
+import './Leaderboard.css'; // Make sure to use the optimized CSS
 
 const Leaderboard = () => {
   const [leaderboard, setLeaderboard] = useState([]);
@@ -10,7 +11,7 @@ const Leaderboard = () => {
   const [error, setError] = useState(null);
   const [retryCount, setRetryCount] = useState(0);
   
-  // Create client with the correct transport configuration
+  // Create client with the correct transport configuration and memoize it
   const client = useMemo(() => createPublicClient({
     chain: SomniaChain,
     transport: http("https://dream-rpc.somnia.network", {
@@ -23,33 +24,41 @@ const Leaderboard = () => {
   // Contract address
   const contractAddress = import.meta.env.VITE_CONTRACT_ADDRESS;
 
-  // Function to format addresses for display
-  const formatAddress = (address) => {
+  // Function to format addresses for display - memoized for performance
+  const formatAddress = useCallback((address) => {
     if (!address) return "";
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
-  };
+  }, []);
 
   // Function to format dates
-  const formatDate = (timestamp) => {
+  const formatDate = useCallback((timestamp) => {
     try {
       const date = new Date(Number(timestamp) * 1000);
+      // Mobile-friendly date format
       return date.toLocaleDateString(undefined, { 
         month: 'short', 
-        day: 'numeric',
-        year: 'numeric'
+        day: 'numeric'
       });
     } catch (err) {
       console.error("Error formatting date:", err);
-      return "Unknown date";
+      return "Unknown";
     }
-  };
+  }, []);
 
   // Function to handle retrying the data fetch
-  const handleRetry = () => {
+  const handleRetry = useCallback(() => {
     setLoading(true);
     setError(null);
     setRetryCount(prev => prev + 1);
-  };
+  }, []);
+
+  // Detect if we're on a mobile device
+  const isMobile = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth <= 768 || 
+           ('ontouchstart' in window) || 
+           (navigator.maxTouchPoints > 0);
+  }, []);
 
   useEffect(() => {
     const fetchLeaderboard = async () => {
@@ -103,7 +112,7 @@ const Leaderboard = () => {
     };
 
     fetchLeaderboard();
-  }, [client, contractAddress, retryCount]);
+  }, [client, contractAddress, retryCount, formatDate]);
 
   // Render loading state
   if (loading) {
@@ -112,7 +121,7 @@ const Leaderboard = () => {
         <h2>TOP SCORES</h2>
         <div className="loading-container">
           <div className="dino-running-loader"></div>
-          <p>Loading leaderboard from blockchain...</p>
+          <p>Loading leaderboard...</p>
         </div>
       </div>
     );
@@ -163,14 +172,16 @@ const Leaderboard = () => {
               <th>#</th>
               <th>PLAYER</th>
               <th>SCORE</th>
+              {!isMobile && <th>DATE</th>}
             </tr>
           </thead>
           <tbody>
             {leaderboard.map((entry) => (
               <tr key={`${entry.player}-${entry.score}`} className={entry.rank <= 3 ? `rank-${entry.rank}` : ''}>
                 <td>{entry.rank}</td>
-                <td>{formatAddress(entry.player)}</td>
+                <td className="player-address">{formatAddress(entry.player)}</td>
                 <td>{entry.score.toLocaleString()}</td>
+                {!isMobile && <td>{entry.timestamp}</td>}
               </tr>
             ))}
           </tbody>

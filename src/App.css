@@ -1,7 +1,7 @@
-/* Import the Press Start 2P font */
+/* Optimized App.css with improved mobile support */
 @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
 
-/* Root styles */
+/* Custom properties for theming */
 :root {
   --primary-color: #535353;
   --accent-color: #228B22;
@@ -9,6 +9,27 @@
   --background-color: #fff;
   --border-color: #535353;
   --shadow-color: #f5f5f5;
+  --font-small: clamp(8px, 2.5vw, 12px);
+  --font-medium: clamp(12px, 3vw, 16px);
+  --font-large: clamp(18px, 5vw, 24px);
+  --font-xlarge: clamp(24px, 6vw, 32px);
+  --spacing-small: clamp(8px, 2vw, 15px);
+  --spacing-medium: clamp(15px, 3vw, 25px);
+  --spacing-large: clamp(20px, 5vw, 40px);
+}
+
+/* Ensure proper viewport height on mobile */
+html, body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+/* Apply smooth scrolling globally */
+html {
+  scroll-behavior: smooth;
 }
 
 /* Main container */
@@ -25,32 +46,38 @@
   background-color: var(--background-color);
   z-index: 1000;
   font-family: 'Press Start 2P', monospace;
-  padding: 20px 10px;
+  padding: var(--spacing-medium) var(--spacing-small);
   overflow-y: auto;
+  
+  /* Add smooth inertia scrolling for iOS */
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Game title */
 .game-title {
   text-align: center;
-  margin: 20px 0;
+  margin: var(--spacing-medium) 0;
+  width: 100%;
 }
 
 .game-title h1 {
-  font-size: 32px;
+  font-size: var(--font-xlarge);
   color: var(--primary-color);
   margin: 0;
+  /* Prevent text from overflowing on small screens */
+  word-break: break-word;
 }
 
 .game-title .subtitle {
-  font-size: 14px;
+  font-size: var(--font-small);
   color: var(--primary-color);
-  margin-top: 8px;
+  margin-top: var(--spacing-small);
 }
 
 .game-title .connected-text {
-  font-size: 14px;
+  font-size: var(--font-small);
   color: var(--accent-color);
-  margin-top: 8px;
+  margin-top: var(--spacing-small);
 }
 
 /* Game container */
@@ -62,11 +89,19 @@
   align-items: center;
   background-color: var(--background-color);
   position: relative;
+  overflow: hidden; /* Prevent scrolling when game is active */
 }
 
 .game-container canvas {
   max-width: 100%;
   max-height: 100%;
+  
+  /* Better touch handling for iOS */
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .game-overlay {
@@ -77,9 +112,9 @@
 }
 
 .back-button {
-  font-size: 10px !important;
+  font-size: var(--font-small) !important;
   padding: 8px 12px !important;
-  margin-top: 20px;
+  margin-top: var(--spacing-medium);
 }
 
 /* Wallet connector */
@@ -87,22 +122,22 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  margin: 20px 0;
+  margin: var(--spacing-medium) 0;
   width: 100%;
-  max-width: 500px;
+  max-width: min(500px, 90vw);
 }
 
 .wallet-connector .title {
-  font-size: 18px;
+  font-size: var(--font-medium);
   color: var(--primary-color);
   text-align: center;
-  margin: 10px 0;
+  margin: var(--spacing-small) 0;
 }
 
 .wallet-connector .status-message {
-  font-size: 12px;
+  font-size: var(--font-small);
   text-align: center;
-  margin: 10px 0;
+  margin: var(--spacing-small) 0;
   padding: 8px 15px;
   border-radius: 4px;
   max-width: 100%;
@@ -115,6 +150,18 @@
   background-color: rgba(34, 139, 34, 0.1);
 }
 
+.leaderboard-view {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
 .status-message.disconnected {
   color: var(--error-color);
   border: 1px dashed var(--error-color);
@@ -125,16 +172,16 @@
   display: flex;
   flex-direction: column;
   gap: 15px;
-  margin-top: 20px;
+  margin-top: var(--spacing-medium);
   width: 100%;
-  max-width: 300px;
+  max-width: min(300px, 90vw);
 }
 
 /* Pixel button */
 .pixel-button {
   font-family: 'Press Start 2P', monospace;
-  font-size: 16px;
-  padding: 15px 25px;
+  font-size: var(--font-small);
+  padding: var(--spacing-small) var(--spacing-medium);
   background-color: var(--background-color);
   color: var(--primary-color);
   border: 3px solid var(--border-color);
@@ -145,6 +192,10 @@
   image-rendering: pixelated;
   position: relative;
   overflow: hidden;
+  
+  /* Better touch handling */
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
 }
 
 .pixel-button::after {
@@ -168,6 +219,7 @@
   box-shadow: 3px 3px 0 var(--shadow-color);
 }
 
+/* Use active for both mouse and touch */
 .pixel-button:active {
   transform: translate(5px, 5px);
   box-shadow: none;
@@ -184,101 +236,33 @@
   border-color: #196619;
 }
 
-/* Leaderboard section */
-.leaderboard {
-  margin: 20px 0;
-  width: 100%;
-  max-width: 500px;
-  padding: 15px;
-  border: 3px solid var(--border-color);
-  background-color: rgba(240, 240, 240, 0.5);
-}
-
-.leaderboard-view {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-}
-
-.leaderboard h3 {
-  text-align: center;
-  margin: 0 0 15px 0;
-  font-size: 16px;
-  color: var(--primary-color);
-  border-bottom: 2px dashed var(--primary-color);
-  padding-bottom: 10px;
-}
-
-.leaderboard-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.leaderboard-item {
-  display: flex;
-  align-items: center;
-  padding: 8px;
-  background-color: white;
-  border: 1px solid #ccc;
-}
-
-.leaderboard-item .rank {
-  flex: 0 0 30px;
-  font-weight: bold;
-  font-size: 14px;
-  text-align: center;
-  color: var(--accent-color);
-}
-
-.leaderboard-item .player {
-  flex: 1;
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  padding: 0 10px;
-}
-
-.leaderboard-item .score {
-  flex: 0 0 80px;
-  font-size: 12px;
-  text-align: right;
-  font-weight: bold;
-}
-
 /* Instructions section */
 .instructions {
-  margin: 20px 0;
+  margin: var(--spacing-medium) 0;
   width: 100%;
-  max-width: 500px;
-  padding: 15px;
+  max-width: min(500px, 90vw);
+  padding: var(--spacing-small);
   border: 3px solid var(--border-color);
   background-color: rgba(240, 240, 240, 0.5);
 }
 
 .instructions h3 {
   text-align: center;
-  margin: 0 0 15px 0;
-  font-size: 16px;
+  margin: 0 0 var(--spacing-small) 0;
+  font-size: var(--font-medium);
   color: var(--primary-color);
   border-bottom: 2px dashed var(--primary-color);
-  padding-bottom: 10px;
+  padding-bottom: var(--spacing-small);
 }
 
 .instructions ul {
-  padding-left: 20px;
+  padding-left: var(--spacing-medium);
   margin: 0;
 }
 
 .instructions li {
-  margin-bottom: 10px;
-  font-size: 12px;
+  margin-bottom: var(--spacing-small);
+  font-size: var(--font-small);
   line-height: 1.5;
 }
 
@@ -291,11 +275,16 @@
   margin: 0 3px;
 }
 
+/* Mobile-specific instructions */
+.mobile-instructions {
+  display: none;
+}
+
 /* Footer */
 footer {
   margin-top: auto;
-  padding: 20px 0;
-  font-size: 8px;
+  padding: var(--spacing-medium) 0;
+  font-size: var(--font-small);
   color: #999;
   text-align: center;
   width: 100%;
@@ -303,273 +292,66 @@ footer {
 
 /* Intro animation */
 .intro-container {
-  position: absolute;
+  position: fixed;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
   display: flex;
+  flex-direction: column;
   justify-content: center;
   align-items: center;
   background-color: var(--background-color);
   z-index: 9999;
-  animation: fadeIn 0.5s ease-in-out, fadeOut 0.5s ease-in-out 3s forwards;
 }
 
 .intro-logo {
   display: flex;
   flex-direction: column;
   align-items: center;
-  animation: scaleUp 2s cubic-bezier(0.19, 1, 0.22, 1);
+  animation: pulse 3.5s ease-in-out;
+  margin-bottom: var(--spacing-large);
 }
 
 .dino-logo {
-  width: 100px;
-  height: 100px;
-  object-fit: none;
-  object-position: -848px -2px;
-  image-rendering: pixelated;
-  margin-bottom: 20px;
+  width: 88px;
+  height: 94px;
+  background-image: url('/assets/sprites/dino-atlas.png');
+  background-repeat: no-repeat;
+  margin-bottom: 30px;
+  animation: introDinoRun 0.4s steps(1) infinite;
+}
+
+@keyframes introDinoRun {
+  0%, 100% { background-position: -577px -27px; }
+  50% { background-position: -667px -27px; }
 }
 
 .intro-text {
   font-family: 'Press Start 2P', monospace;
-  font-size: 28px;
+  font-size: var(--font-large);
   color: var(--primary-color);
-  text-align: center;
-  margin-bottom: 10px;
-}
-
-.intro-tagline {
-  font-family: 'Press Start 2P', monospace;
-  font-size: 14px;
-  color: var(--accent-color);
+  margin-bottom: var(--spacing-small);
+  letter-spacing: 2px;
+  animation: slideIn 1s ease-out;
   text-align: center;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes fadeOut {
-  from { opacity: 1; }
-  to { opacity: 0; visibility: hidden; }
-}
-
-@keyframes scaleUp {
-  from { transform: scale(0.5); }
-  to { transform: scale(1); }
-}
-
-/* Responsive design */
-@media (max-width: 600px) {
-  .game-title h1 {
-    font-size: 24px;
-  }
-  
-  .game-title .subtitle {
-    font-size: 10px;
-  }
-  
-  .wallet-connector .title {
-    font-size: 14px;
-  }
-  
-  .wallet-connector .status-message {
-    font-size: 10px;
-  }
-  
-  .pixel-button {
-    font-size: 12px;
-    padding: 12px 20px;
-  }
-  
-  .leaderboard h3, 
-  .instructions h3 {
-    font-size: 14px;
-  }
-  
-  .leaderboard-item .player,
-  .leaderboard-item .score {
-    font-size: 10px;
-  }
-  
-  .instructions li {
-    font-size: 10px;
-  }
-}
-
-.toggle-scores-button {
-  margin: 15px 0;
-  font-size: 10px;
-  padding: 8px 12px;
-}
-
-.loader-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 20px 0;
-}
-
-.pixel-loader {
-  width: 20px;
-  height: 20px;
-  background-color: #535353;
-  margin-bottom: 10px;
-  animation: pixelLoader 1s infinite steps(1);
-}
-
-@keyframes pixelLoader {
-  0% { transform: translate(0, 0); }
-  25% { transform: translate(5px, 0); }
-  50% { transform: translate(5px, 5px); }
-  75% { transform: translate(0, 5px); }
-  100% { transform: translate(0, 0); }
-}
-
-.loader-container p {
-  font-size: 10px;
-  color: #535353;
-}
-
-/* Adjustments to the top-scores-section */
-.top-scores-section {
-  width: 100%;
-  max-width: 320px;
-  margin: 10px 0 20px;
-  padding: 15px;
-  background: #f5f5f5;
-  border: 2px solid #535353;
-  box-shadow: 4px 4px 0 #e0e0e0;
-  transition: all 0.3s ease;
-}
-
-/* Animation for showing/hiding top scores */
-@keyframes slideDown {
-  from { opacity: 0; transform: translateY(-20px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.top-scores-section {
-  animation: slideDown 0.3s ease;
-}
-
-/* Intro animation styles */
-.intro-container {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  background-color: #fff;
-  z-index: 1000;
-  font-family: 'Press Start 2P', monospace;
-  animation: fadeIn 0.5s ease-in;
-}
-
-.intro-logo {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  animation: pulse 3.5s ease-in-out;
-  margin-bottom: 40px;
-}
-
-.dino-logo {
-  width: 88px;
-  height: 94px;
-  background-image: url('/assets/sprites/dino-atlas.png');
-  background-repeat: no-repeat;
-  margin-bottom: 30px;
-  animation: introDinoRun 0.4s steps(1) infinite;
-}
-
-@keyframes introDinoRun {
-  0%, 100% { background-position: -577px -27px; } /* dino-run-1 */
-  50% { background-position: -667px -27px; }      /* dino-run-2 */
-}
-
-.intro-text {
-  font-size: 28px;
-  color: #535353;
-  margin-bottom: 10px;
-  letter-spacing: 2px;
-  animation: slideIn 1s ease-out;
-}
-
 .intro-tagline {
-  font-size: 16px;
+  font-family: 'Press Start 2P', monospace;
+  font-size: var(--font-small);
   color: #757575;
   animation: slideIn 1.5s ease-out;
-}
-
-/* Intro animation styles */
-.intro-container {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  background-color: #fff;
-  z-index: 1000;
-  font-family: 'Press Start 2P', monospace;
-  animation: fadeIn 0.5s ease-in;
-}
-
-.intro-logo {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  animation: pulse 3.5s ease-in-out;
-  margin-bottom: 40px;
-}
-
-.dino-logo {
-  width: 88px;
-  height: 94px;
-  background-image: url('/assets/sprites/dino-atlas.png');
-  background-repeat: no-repeat;
-  margin-bottom: 30px;
-  animation: introDinoRun 0.4s steps(1) infinite;
-}
-
-@keyframes introDinoRun {
-  0%, 100% { background-position: -577px -27px; } /* dino-run-1 */
-  50% { background-position: -667px -27px; }      /* dino-run-2 */
-}
-
-.intro-text {
-  font-size: 28px;
-  color: #535353;
-  margin-bottom: 10px;
-  letter-spacing: 2px;
-  animation: slideIn 1s ease-out;
-}
-
-.intro-tagline {
-  font-size: 16px;
-  color: #757575;
-  animation: slideIn 1.5s ease-out;
+  text-align: center;
 }
 
 /* Loading bar for intro - 8-bit style */
 .intro-loading-container {
-  width: 240px;
+  width: min(240px, 80vw);
   height: 20px;
   background-color: #fff;
-  border: 2px solid #535353;
-  margin-top: 20px;
+  border: 2px solid var(--primary-color);
+  margin-top: var(--spacing-medium);
   position: relative;
   overflow: hidden;
   padding: 3px;
@@ -578,7 +360,7 @@ footer {
 
 .intro-loading-progress {
   height: 100%;
-  background-color: #535353;
+  background-color: var(--primary-color);
   transition: width 0.1s linear;
   animation: progressLoad 3.5s linear forwards;
   box-shadow: inset 2px 2px 0 rgba(255, 255, 255, 0.3);
@@ -596,6 +378,7 @@ footer {
   letter-spacing: 1px;
 }
 
+/* Optimized animations */
 @keyframes progressLoad {
   0% { width: 0%; }
   85% { width: 95%; }
@@ -607,7 +390,6 @@ footer {
   to { opacity: 1; }
 }
 
-/* Changed to avoid flickering by removing fadeout */
 @keyframes pulse {
   0% { transform: scale(0.8); opacity: 0; }
   20% { transform: scale(1); opacity: 1; }
@@ -619,7 +401,7 @@ footer {
   to { transform: translateY(0); opacity: 1; }
 }
 
-/* Fade out animation for smooth transition */
+/* Fade out animation */
 .fade-out {
   animation: fadeOut 0.3s ease-out forwards;
 }
@@ -627,4 +409,66 @@ footer {
 @keyframes fadeOut {
   from { opacity: 1; }
   to { opacity: 0; }
+}
+
+/* Prevent bouncing/scrolling in iOS Safari */
+body {
+  position: fixed;
+  overflow: hidden;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* Media queries for different device sizes */
+@media (max-width: 768px) {
+  .mobile-instructions {
+    display: block;
+  }
+  
+  .desktop-instructions {
+    display: none;
+  }
+  
+  /* More compact layout */
+  .wallet-connector {
+    margin: var(--spacing-small) 0;
+  }
+  
+  .instructions {
+    margin: var(--spacing-small) 0;
+  }
+  
+  /* Ensure button text doesn't wrap */
+  .pixel-button {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+/* Landscape mode adjustments */
+@media (max-width: 768px) and (orientation: landscape) {
+  .app-container {
+    padding: var(--spacing-small);
+  }
+  
+  .game-title {
+    margin: var(--spacing-small) 0;
+  }
+  
+  .wallet-connector .button-container {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+}
+
+/* Handle notches on mobile devices */
+@supports (padding: max(0px)) {
+  .app-container {
+    padding-left: max(var(--spacing-small), env(safe-area-inset-left));
+    padding-right: max(var(--spacing-small), env(safe-area-inset-right));
+    padding-top: max(var(--spacing-small), env(safe-area-inset-top));
+    padding-bottom: max(var(--spacing-small), env(safe-area-inset-bottom));
+  }
 }
