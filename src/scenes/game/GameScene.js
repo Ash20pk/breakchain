@@ -81,12 +81,19 @@ class GameScene extends Phaser.Scene {
     this.ui = new UI(this);
     this.intro = new Intro(this.events);
 
+    // Create intro text instructions when in initial state
+    if (this.isInitialStart) {
+      this.createIntroText();
+    }
+
     this.player = new Player(this);
 
     this.horizon = new Horizon(this);
     this.ground = this.horizon.ground;
     this.obstacles = this.horizon.obstacles;
     this.nightMode = this.horizon.nightMode;
+
+    this.ground.setVisible(false);
 
     this.physics.add.collider(this.player, this.ground);
     this.physics.add.overlap(this.player, this.obstacles, this.onPlayerHitObstacle, null, this);
@@ -104,6 +111,11 @@ class GameScene extends Phaser.Scene {
   update() {
     const { gameSize } = this.scale;
     const isMobile = gameSize.width === CONFIG.GAME.WIDTH.PORTRAIT;
+
+    // Check for leaderboard toggle key press
+    if (this.isInitialStart && this.leaderboardToggleKey && Phaser.Input.Keyboard.JustDown(this.leaderboardToggleKey)) {
+      this.ui.toggleLeaderboard();
+    }
 
     this.inputManager.update();
     this.ui.update(this.isPlaying, gameSize, this.score);
@@ -137,6 +149,40 @@ class GameScene extends Phaser.Scene {
     }
   }
 
+  createIntroText() {
+    // Only create if we're in the initial start state
+    if (!this.isInitialStart) return;
+    
+    const { width, height } = this.scale.gameSize;
+    
+    // Create intro text for players
+    this.introText = this.add.bitmapText(
+      width * 0.5, // Center horizontally
+      height * 0.4,
+      'joystix',
+      'DINO RUNNER',
+      32
+    ).setOrigin(0.6, 0.6).setTint(0x535353).setDepth(900);
+    
+    // Add instruction text with blinking effect
+    this.startText = this.add.bitmapText(
+      width * 0.5,
+      height * 0.6,
+      'joystix',
+      'PRESS SPACE OR UP TO START',
+      16
+    ).setOrigin(0.6, 0.6).setTint(0x535353).setDepth(900);
+    
+    // Create blinking effect for the start text
+    this.tweens.add({
+      targets: this.startText,
+      alpha: { from: 1, to: 0.3 },
+      duration: 800,
+      yoyo: true,
+      repeat: -1
+    });
+  }
+
   /**
    * Handle player collision with obstacle
    */
@@ -153,6 +199,12 @@ class GameScene extends Phaser.Scene {
     //   navigator.vibrate(GameScene.CONFIG.GAMEOVER.VIBRATION);
     //   return; // Prevent game from starting
     // }
+
+    // Hide intro text elements
+    if (this.introText) this.introText.setVisible(false);
+    if (this.blockchainText) this.blockchainText.setVisible(false);
+    if (this.startText) this.startText.setVisible(false);
+    if (this.ground) this.ground.setVisible(true);
     
     this.isPlaying = true;
     this.isInitialStart = false;
@@ -321,8 +373,15 @@ class GameScene extends Phaser.Scene {
     this.ui.resize(gameSize);
     this.ground.resize(gameSize);
 
-    if (this.serverStatusOverlay) {
-      this.serverStatusOverlay.resize(gameSize);
+    // Resize intro text elements
+    if (this.introText) {
+      this.introText.setPosition(gameSize.width * 0.5, gameSize.height * 0.4);
+    }
+    if (this.blockchainText) {
+      this.blockchainText.setPosition(gameSize.width * 0.5, gameSize.height * 0.48);
+    }
+    if (this.startText) {
+      this.startText.setPosition(gameSize.width * 0.5, gameSize.height * 0.6);
     }
   }
 }

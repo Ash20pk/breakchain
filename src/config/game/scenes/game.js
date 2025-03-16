@@ -94,7 +94,7 @@ const GAME = {
     },
     DURATION: 400,
     CAMERA: {
-      WIDTH: 90,
+      WIDTH: 900,
     },
   },
   NIGHTMODE: {

@@ -162,7 +162,41 @@ contract DinoRunner {
 
     // Helper function to update leaderboard
     function updateLeaderboard(address player, uint256 score) private {
-        // Check if the score is high enough to be on the leaderboard
+
+        // First check if player already exists in leaderboard
+        int256 existingIndex = -1;
+        for (uint256 i = 0; i < leaderboard.length; i++) {
+            if (leaderboard[i].player == player) {
+                existingIndex = int256(i);
+                break;
+            }
+        }
+
+        // If player exists and new score is higher, update their entry
+        if (existingIndex >= 0) {
+            uint256 idx = uint256(existingIndex);
+            if (score > leaderboard[idx].score) {
+                // Save old position for reference
+                uint256 _oldScore = leaderboard[idx].score;
+                
+                // Update entry
+                leaderboard[idx].score = score;
+                leaderboard[idx].timestamp = block.timestamp;
+                
+                // Reposition entry if needed (move up in leaderboard)
+                while (idx > 0 && leaderboard[idx].score > leaderboard[idx-1].score) {
+                    // Swap with entry above
+                    LeaderboardEntry memory temp = leaderboard[idx-1];
+                    leaderboard[idx-1] = leaderboard[idx];
+                    leaderboard[idx] = temp;
+                    idx--;
+                }
+            }
+            // If score is not higher, do nothing
+            return;
+        }
+
+         // Check if the score is high enough to be on the leaderboard
         if (leaderboard.length < LEADERBOARD_SIZE || score > leaderboard[leaderboard.length - 1].score) {
             // Create new entry
             LeaderboardEntry memory newEntry = LeaderboardEntry({
