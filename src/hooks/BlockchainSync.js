@@ -5,9 +5,11 @@ import { getWalletState } from '../utils/WalletBridge';
 import { getBlockchainEvents } from '../utils/blockchainEvents';
 
 // Debug flag
-const DEBUG = true;
-// DEV MODE - Set to true to enable the workaround for server not responding
-const DEV_MODE = true;
+const DEBUG = import.meta.env.VITE_DEBUG === 'true';
+
+// DEV MODE 
+const DEV_MODE = import.meta.env.VITE_DEV_MODE === 'true';
+
 
 // Define module variables
 let socket = null;
