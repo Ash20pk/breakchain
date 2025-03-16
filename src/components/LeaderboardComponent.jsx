@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { createPublicClient, http } from 'viem';
 import { SomniaChain } from '../utils/chain';
 import { DinoRunnerABI } from './abi/DinoRunnerABI';
@@ -8,20 +8,53 @@ const Leaderboard = () => {
   const [leaderboard, setLeaderboard] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [retryCount, setRetryCount] = useState(0);
   
   // Create client with the correct transport configuration
-  const client = createPublicClient({
+  const client = useMemo(() => createPublicClient({
     chain: SomniaChain,
-    transport: http("https://dream-rpc.somnia.network")
-  });
+    transport: http("https://dream-rpc.somnia.network", {
+      timeout: 15000, // 15 second timeout
+      retryCount: 3,
+      retryDelay: 1000,
+    })
+  }), []);
 
   // Contract address
   const contractAddress = import.meta.env.VITE_CONTRACT_ADDRESS;
 
+  // Function to format addresses for display
+  const formatAddress = (address) => {
+    if (!address) return "";
+    return `${address.slice(0, 6)}...${address.slice(-4)}`;
+  };
+
+  // Function to format dates
+  const formatDate = (timestamp) => {
+    try {
+      const date = new Date(Number(timestamp) * 1000);
+      return date.toLocaleDateString(undefined, { 
+        month: 'short', 
+        day: 'numeric',
+        year: 'numeric'
+      });
+    } catch (err) {
+      console.error("Error formatting date:", err);
+      return "Unknown date";
+    }
+  };
+
+  // Function to handle retrying the data fetch
+  const handleRetry = () => {
+    setLoading(true);
+    setError(null);
+    setRetryCount(prev => prev + 1);
+  };
+
   useEffect(() => {
     const fetchLeaderboard = async () => {
       if (!contractAddress) {
-        setError("Contract address not available");
+        setError("Contract address not configured");
         setLoading(false);
         return;
       }
@@ -36,97 +69,115 @@ const Leaderboard = () => {
           functionName: 'getLeaderboard',
         });
         
-        console.log("Raw data from contract:", data);
+        if (!data || !Array.isArray(data)) {
+          throw new Error("Invalid data received from blockchain");
+        }
 
         // Transform the data for display
-        const formattedLeaderboard = data.map((entry, index) => ({
-          rank: index + 1,
-          player: entry.player,
-          score: Number(entry.score),
-          timestamp: new Date(Number(entry.timestamp) * 1000).toLocaleDateString()
-        }));
-        
-        console.log("Formatted leaderboard:", formattedLeaderboard);
+        const formattedLeaderboard = data
+          .filter(entry => entry && typeof entry === 'object') // Filter valid entries
+          .map((entry, index) => ({
+            rank: index + 1,
+            player: entry.player,
+            score: Number(entry.score || 0),
+            timestamp: entry.timestamp ? formatDate(entry.timestamp) : 'Unknown'
+          }))
+          .sort((a, b) => b.score - a.score); // Ensure sorting by score (descending)
 
         setLeaderboard(formattedLeaderboard);
         setLoading(false);
       } catch (err) {
         console.error("Error fetching leaderboard:", err);
-        setError("Failed to fetch leaderboard data: " + err.message);
+        
+        // Provide a more user-friendly error message
+        if (err.message?.includes('network') || err.message?.includes('timeout')) {
+          setError("Network error. Please check your connection and try again.");
+        } else if (err.message?.includes('contract')) {
+          setError("Contract error. The leaderboard data couldn't be accessed.");
+        } else {
+          setError(`Failed to fetch leaderboard: ${err.message || "Unknown error"}`);
+        }
+        
         setLoading(false);
       }
     };
 
     fetchLeaderboard();
-  }, [client, contractAddress]);
+  }, [client, contractAddress, retryCount]);
 
-  // Debug output - add this to see what's happening
-  console.log("Component state:", { loading, error, leaderboardLength: leaderboard.length });
-
-  // Function to format addresses for display
-  const formatAddress = (address) => {
-    if (!address) return "";
-    return `${address.slice(0, 6)}...${address.slice(-4)}`;
-  };
-
+  // Render loading state
   if (loading) {
     return (
       <div className="blockchain-leaderboard">
-        <h2>Top Scores</h2>
+        <h2>TOP SCORES</h2>
         <div className="loading-container">
-          <div className="pixel-loader"></div>
+          <div className="dino-running-loader"></div>
           <p>Loading leaderboard from blockchain...</p>
         </div>
       </div>
     );
   }
 
+  // Render error state
   if (error) {
     return (
       <div className="blockchain-leaderboard">
-        <h2>Top Scores</h2>
+        <h2>TOP SCORES</h2>
         <div className="error-container">
           <p className="error-message">{error}</p>
           <button 
-            className="pixel-button"
-            onClick={() => window.location.reload()}
+            className="pixel-button retry-button"
+            onClick={handleRetry}
           >
-            Retry
+            RETRY
           </button>
         </div>
       </div>
     );
   }
 
+  // Render empty state
+  if (!leaderboard || leaderboard.length === 0) {
+    return (
+      <div className="blockchain-leaderboard">
+        <h2>TOP SCORES</h2>
+        <div className="empty-container">
+          <p className="no-scores">No scores recorded yet. Be the first!</p>
+          <div className="dino-placeholder"></div>
+        </div>
+        <p className="blockchain-note">
+          All scores are permanently recorded on the Somnia blockchain
+        </p>
+      </div>
+    );
+  }
+
+  // Render leaderboard
   return (
     <div className="blockchain-leaderboard">
-      <h2>Top Scores</h2>
-      {leaderboard && leaderboard.length > 0 ? (
-        <div className="leaderboard-table-container">
-          <table className="leaderboard-table">
-            <thead>
-              <tr>
-                <th>Rank</th>
-                <th>Player</th>
-                <th>Score</th>
-                <th>Date</th>
+      <h2>TOP SCORES</h2>
+      <div className="leaderboard-table-container">
+        <table className="leaderboard-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>PLAYER</th>
+              <th>SCORE</th>
+              <th>DATE</th>
+            </tr>
+          </thead>
+          <tbody>
+            {leaderboard.map((entry) => (
+              <tr key={`${entry.player}-${entry.score}`} className={entry.rank <= 3 ? `rank-${entry.rank}` : ''}>
+                <td>{entry.rank}</td>
+                <td>{formatAddress(entry.player)}</td>
+                <td>{entry.score.toLocaleString()}</td>
+                <td>{entry.timestamp}</td>
               </tr>
-            </thead>
-            <tbody>
-              {leaderboard.map((entry) => (
-                <tr key={`${entry.player}-${entry.score}`}>
-                  <td>{entry.rank}</td>
-                  <td>{formatAddress(entry.player)}</td>
-                  <td>{entry.score}</td>
-                  <td>{entry.timestamp}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className="no-scores">No scores recorded yet. Be the first!</p>
-      )}
+            ))}
+          </tbody>
+        </table>
+      </div>
       <p className="blockchain-note">
         All scores are permanently recorded on the Somnia blockchain
       </p>

@@ -45,7 +45,7 @@ export function initialize(config = {}) {
   }
   
   // Use default URL if none provided
-  const socketUrl = config.socketUrl || 'ws://localhost:3002';
+  const socketUrl = import.meta.env.VITE_WEBSOCKET_URL || 'ws://localhost:3002';
   
   if (DEBUG) console.log(`BlockchainSync: Initializing new socket to ${socketUrl}`);
   
