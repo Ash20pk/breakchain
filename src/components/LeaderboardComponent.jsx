@@ -163,7 +163,6 @@ const Leaderboard = () => {
               <th>#</th>
               <th>PLAYER</th>
               <th>SCORE</th>
-              <th>DATE</th>
             </tr>
           </thead>
           <tbody>
@@ -172,7 +171,6 @@ const Leaderboard = () => {
                 <td>{entry.rank}</td>
                 <td>{formatAddress(entry.player)}</td>
                 <td>{entry.score.toLocaleString()}</td>
-                <td>{entry.timestamp}</td>
               </tr>
             ))}
           </tbody>
