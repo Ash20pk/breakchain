@@ -1,5 +1,4 @@
-// server/index.ts - High Performance WebSocket Transaction Server
-import express from 'express';
+import express, { Request, Response } from 'express';
 import http from 'http';
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { Pool, PoolConfig } from 'pg';
@@ -12,6 +11,7 @@ import { createClient } from 'redis';
 import winston from 'winston';
 import os from 'os';
 import cluster from 'cluster';
+
 
 dotenv.config();
 
@@ -44,6 +44,17 @@ const DB_OPERATIONS_TIMEOUT = 5000; // 5 seconds timeout for database operations
 // Transaction types
 const TX_TYPE_JUMP = 'jump';
 const TX_TYPE_GAME_OVER = 'gameover';
+
+// Retry System Configuration
+const RETRY_CONFIG = {
+  MAX_RETRIES: 5,                  // Maximum number of retry attempts
+  INITIAL_DELAY: 5000,             // Start with 5 second delay between retries
+  MAX_DELAY: 5 * 60 * 1000,        // Maximum 5 minute delay
+  BACKOFF_FACTOR: 2,               // Exponential backoff multiplier
+  JITTER: 0.2,                     // Add 20% random jitter to prevent thundering herd
+  BATCH_SIZE: 10,                  // Number of failed transactions to process in one batch
+  CHECK_INTERVAL: 1 * 60 * 1000    // Check for failed transactions every 1 minute
+};
 
 // Database configuration
 const getDbConfig = (): PoolConfig => {
@@ -84,6 +95,11 @@ const createDbPool = () => {
   pool.query('SELECT NOW()')
     .then(() => {
       logger.info('Database connection successful');
+      
+      // Ensure the retry_after column exists
+      ensureRetryAfterColumn()
+        .then(() => logger.info('Retry system database schema validated'))
+        .catch(err => logger.error('Failed to setup retry system database schema:', err));
     })
     .catch(err => {
       logger.error('Initial database connection test failed:', err);
@@ -97,6 +113,60 @@ const createDbPool = () => {
   
   return pool;
 };
+
+// Ensure retry_after column exists in the database
+async function ensureRetryAfterColumn() {
+  const client = await pool.connect();
+  try {
+    // Check if the column already exists
+    const columnCheck = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'dino_transaction_queue' AND column_name = 'retry_after'
+    `);
+    
+    // If column doesn't exist, add it
+    if (columnCheck.rowCount === 0) {
+      logger.info('Adding retry_after column to dino_transaction_queue table');
+      await client.query('ALTER TABLE dino_transaction_queue ADD COLUMN retry_after BIGINT');
+      
+      // Create an index for more efficient retrieval of transactions to retry
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_dino_transaction_queue_retry
+        ON dino_transaction_queue(status, retries, retry_after)
+      `);
+      
+      logger.info('Added retry_after column and index to dino_transaction_queue table');
+    } else {
+      logger.info('retry_after column already exists in dino_transaction_queue table');
+    }
+    
+    // Add function to get next batch of transactions for retry if it doesn't exist
+    await client.query(`
+      CREATE OR REPLACE FUNCTION get_next_retry_transactions(batch_size INTEGER)
+      RETURNS SETOF dino_transaction_queue AS $$
+      BEGIN
+        RETURN QUERY
+        SELECT * FROM dino_transaction_queue
+        WHERE status = 'failed' 
+        AND retries < ${RETRY_CONFIG.MAX_RETRIES}
+        AND (retry_after IS NULL OR retry_after <= EXTRACT(EPOCH FROM NOW()) * 1000)
+        ORDER BY timestamp ASC
+        LIMIT batch_size
+        FOR UPDATE SKIP LOCKED;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    
+    logger.info('Created/updated get_next_retry_transactions function');
+    
+  } catch (error) {
+    logger.error('Error ensuring retry_after column:', error);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 // Initialize the pool
 const pool = createDbPool();
@@ -157,7 +227,7 @@ let broadcastTransactionUpdate: (tx: any) => void = (tx: any) => {
   }
 };
 
- // Define broadcastWalletStatus with a default no-op implementation
+// Define broadcastWalletStatus with a default no-op implementation
 let broadcastWalletStatus: () => void = () => {
   // No-op implementation for when io is not available
   if (!io) {
@@ -201,6 +271,143 @@ async function initRedis() {
     });
   }
 }
+
+/**
+ * Calculate delay for next retry with exponential backoff and jitter
+ * @param retries Current retry count
+ * @returns Delay in milliseconds
+ */
+function calculateBackoffDelay(retries: number): number {
+  // Calculate base delay with exponential backoff
+  const baseDelay = Math.min(
+    RETRY_CONFIG.INITIAL_DELAY * Math.pow(RETRY_CONFIG.BACKOFF_FACTOR, retries),
+    RETRY_CONFIG.MAX_DELAY
+  );
+  
+  // Add jitter to prevent all retries happening simultaneously
+  const jitter = RETRY_CONFIG.JITTER * baseDelay;
+  return Math.floor(baseDelay + (Math.random() * jitter));
+}
+
+/**
+ * Process failed transactions for retry
+ */
+async function processFailedTransactions() {
+  logger.info('Starting retry process for failed transactions');
+  
+  const client = await pool.connect();
+  try {
+    // Start transaction
+    await client.query('BEGIN');
+    
+    // Find transactions to retry - those with status='failed' and retries < MAX_RETRIES
+    const result = await client.query(
+      `SELECT * FROM dino_transaction_queue 
+       WHERE status = 'failed' 
+       AND retries < $1
+       AND (retry_after IS NULL OR retry_after <= EXTRACT(EPOCH FROM NOW()) * 1000)
+       ORDER BY timestamp ASC
+       LIMIT $2
+       FOR UPDATE SKIP LOCKED`,
+      [RETRY_CONFIG.MAX_RETRIES, RETRY_CONFIG.BATCH_SIZE]
+    );
+    
+    if (result.rows.length === 0) {
+      await client.query('COMMIT');
+      return; // No failed transactions to retry
+    }
+    
+    logger.info(`Found ${result.rows.length} failed transactions to retry`);
+    
+    // Update transactions to 'pending' status for retry
+    const txIds = result.rows.map(tx => tx.id);
+    await client.query(
+      `UPDATE dino_transaction_queue 
+       SET status = 'pending'
+       WHERE id = ANY($1)`,
+      [txIds]
+    );
+    
+    // Commit transaction
+    await client.query('COMMIT');
+    
+    logger.info(`Marked ${txIds.length} failed transactions for retry`);
+    
+    // Send notifications about retry attempts (optional)
+    if (USE_REDIS) {
+      for (const tx of result.rows) {
+        const retryAttempt = tx.retries + 1;
+        await redisClient.publish('tx:processed', JSON.stringify({
+          id: tx.id,
+          player_address: tx.player_address,
+          game_id: tx.game_id,
+          type: tx.type,
+          status: 'pending_retry',
+          retryAttempt
+        }));
+      }
+    } else {
+      // Direct broadcast if not using Redis
+      for (const tx of result.rows) {
+        const retryAttempt = tx.retries + 1;
+        broadcastTransactionUpdate({
+          id: tx.id,
+          player_address: tx.player_address,
+          game_id: tx.game_id,
+          type: tx.type,
+          status: 'pending_retry',
+          retryAttempt
+        });
+      }
+    }
+    
+  } catch (error) {
+    await client.query('ROLLBACK');
+    logger.error('Error processing failed transactions for retry:', error);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Initialize the retry system scheduler
+ */
+function initRetrySystem() {
+  logger.info('Initializing transaction retry system');
+  
+  // Set up interval to check for failed transactions
+  setInterval(processFailedTransactions, RETRY_CONFIG.CHECK_INTERVAL);
+  
+  // Initial check for failed transactions at startup (with a small delay)
+  setTimeout(processFailedTransactions, 10000);
+  
+  logger.info(`Retry system initialized. Will check every ${RETRY_CONFIG.CHECK_INTERVAL / 1000} seconds`);
+}
+
+/**
+ * Reset all stuck transactions
+ */
+// async function resetStuckTransactions() {
+//   const client = await pool.connect();
+//   try {
+//     // Find and reset any stuck transactions
+//     const result = await client.query(`
+//       UPDATE dino_transaction_queue
+//       SET status = 'pending', retry_after = NULL
+//       WHERE (status = 'failed' AND retries < $1)
+//          OR (status = 'pending' AND timestamp < EXTRACT(EPOCH FROM NOW()) * 1000 - 3600000)
+//       RETURNING id
+//     `, [RETRY_CONFIG.MAX_RETRIES]);
+    
+//     logger.info(`Reset ${result.rowCount} stuck transactions`);
+//     return result.rowCount;
+//   } catch (error) {
+//     logger.error('Error resetting stuck transactions:', error);
+//     throw error;
+//   } finally {
+//     client.release();
+//   }
+// }
 
 // Blockchain wallet management
 type WalletStatus = {
@@ -358,13 +565,20 @@ class BlockchainManager {
         // Start transaction
         await client.query('BEGIN');
         
-        // Get batch of pending transactions using the function we created
-        const result = await client.query(
-          'SELECT * FROM get_next_pending_transactions($1)',
-          [BATCH_SIZE]
+        // First check for any scheduled retries
+        const retriesResult = await client.query(
+          'SELECT * FROM get_next_retry_transactions($1)',
+          [Math.floor(BATCH_SIZE / 2)] // Use half the batch size for retries
         );
         
-        const transactions = result.rows;
+        // Then get regular pending transactions with the remaining batch capacity
+        const regularResult = await client.query(
+          'SELECT * FROM get_next_pending_transactions($1)',
+          [BATCH_SIZE - (retriesResult.rowCount || 0)]
+        );
+        
+        // Combine both sets of transactions
+        const transactions = [...(retriesResult.rows || []), ...(regularResult.rows || [])];
         
         if (transactions.length === 0) {
           // No pending transactions, release client and return
@@ -373,16 +587,28 @@ class BlockchainManager {
           return;
         }
         
+        // Log the breakdown of regular vs retry transactions
+        if (retriesResult.rowCount && retriesResult.rowCount > 0) {
+          logger.info(`Processing batch with ${retriesResult.rowCount} retries and ${regularResult.rowCount || 0} new transactions`);
+        } else {
+          logger.info(`Processing batch of ${transactions.length} transactions`);
+        }
+        
         // Process batch of transactions
         const wallet = this.walletClients[walletIndex];
         let processedCount = 0;
         let successCount = 0;
         
-        
         // Process each transaction
         for (const tx of transactions) {
           try {
             let hash;
+            const isRetry = tx.retries > 0;
+            
+            // Add specific retry logging 
+            if (isRetry) {
+              logger.info(`Attempting retry #${tx.retries} for transaction ${tx.id} (${tx.type})`);
+            }
             
             if (tx.type === TX_TYPE_JUMP) {
               // Record jump transaction
@@ -424,6 +650,11 @@ class BlockchainManager {
               ['sent', hash, walletIndex, tx.id]
             );
             
+            // Log retry success if applicable
+            if (isRetry) {
+              logger.info(`Retry #${tx.retries} SUCCEEDED for transaction ${tx.id}`);
+            }
+            
             // Increment counters
             processedCount++;
             successCount++;
@@ -437,7 +668,8 @@ class BlockchainManager {
                 type: tx.type,
                 status: 'sent',
                 hash,
-                score: tx.score
+                score: tx.score,
+                retry: isRetry ? tx.retries : undefined
               }));
             } else {
               // Broadcast directly if Redis not used
@@ -448,19 +680,32 @@ class BlockchainManager {
                 type: tx.type,
                 status: 'sent',
                 hash,
-                score: tx.score
+                score: tx.score,
+                retry: isRetry ? tx.retries : undefined
               });
             }
             
             logger.info(`Wallet ${walletIndex} processed ${tx.type} transaction for ${tx.player_address}, hash: ${hash}`);
             
           } catch (err) {
-            logger.error(`Wallet ${walletIndex} error processing transaction ${tx.id}:`, err);
+            const retries = tx.retries + 1;
+            const isMaxRetries = retries >= RETRY_CONFIG.MAX_RETRIES;
             
-            // Mark transaction as failed
+            // Calculate backoff delay if not at max retries
+            let delay = null;
+            if (!isMaxRetries) {
+              delay = calculateBackoffDelay(retries);
+              logger.warn(`Transaction ${tx.id} failed on attempt ${retries}, will retry in ${Math.round(delay/1000)} seconds`);
+            } else {
+              logger.error(`Transaction ${tx.id} failed permanently after ${retries} attempts, will not retry further`);
+            }
+            
+            // Mark transaction as failed with updated retry info
             await client.query(
-              'UPDATE dino_transaction_queue SET status = $1, retries = retries + 1 WHERE id = $2',
-              ['failed', tx.id]
+              `UPDATE dino_transaction_queue 
+               SET status = $1, retries = $2, retry_after = $3
+               WHERE id = $4`,
+              ['failed', retries, delay ? (Date.now() + delay) : null, tx.id]
             );
             
             // Publish failure to Redis if enabled
@@ -470,7 +715,10 @@ class BlockchainManager {
                 player_address: tx.player_address,
                 game_id: tx.game_id,
                 type: tx.type,
-                status: 'failed'
+                status: 'failed',
+                retries,
+                willRetry: !isMaxRetries,
+                nextRetryIn: delay ? Math.round(delay/1000) : null
               }));
             } else {
               broadcastTransactionUpdate({
@@ -478,8 +726,18 @@ class BlockchainManager {
                 player_address: tx.player_address,
                 game_id: tx.game_id,
                 type: tx.type,
-                status: 'failed'
+                status: 'failed',
+                retries,
+                willRetry: !isMaxRetries,
+                nextRetryIn: delay ? Math.round(delay/1000) : null
               });
+            }
+            
+            // Log more details about the error
+            if (err instanceof Error) {
+              logger.error(`Transaction processing error details: ${err.message}`);
+            } else {
+              logger.error('Unexpected error type:', err);
             }
           }
         }
@@ -494,6 +752,12 @@ class BlockchainManager {
         if (successCount > 0) {
           // Reset consecutive errors on success
           this.walletStatus[walletIndex].consecutiveErrors = 0;
+          
+          // Log retry success rate if applicable
+          const retrySuccesses = transactions.filter(tx => tx.retries > 0 && tx.status === 'sent').length;
+          if (retriesResult.rowCount && retriesResult.rowCount > 0 && retrySuccesses > 0) {
+            logger.info(`Retry success rate: ${retrySuccesses}/${retriesResult.rowCount} (${Math.round(retrySuccesses/retriesResult.rowCount*100)}%)`);
+          }
         } else if (processedCount > 0) {
           // Increment consecutive errors only if we tried to process transactions
           this.walletStatus[walletIndex].consecutiveErrors += 1;
@@ -522,47 +786,101 @@ class BlockchainManager {
 // Create blockchain manager
 const blockchainManager = new BlockchainManager(CONTRACT_ADDRESS, DinoRunnerABI);
 
+// Enhanced cleanup function with retry support
+async function cleanupOldTransactions() {
+  const client = await pool.connect();
+  try {
+    // Delete transactions older than 24 hours that are not pending
+    await client.query(`
+      DELETE FROM dino_transaction_queue 
+      WHERE status != 'pending' 
+      AND timestamp < (EXTRACT(EPOCH FROM NOW()) * 1000 - 86400000)
+    `);
+    
+    // Delete failed transactions after max retries that are older than 7 days
+    await client.query(`
+      DELETE FROM dino_transaction_queue
+      WHERE status = 'failed'
+      AND retries >= $1
+      AND timestamp < (EXTRACT(EPOCH FROM NOW()) * 1000 - 604800000)
+    `, [RETRY_CONFIG.MAX_RETRIES]);
+    
+    // Reset transactions that have been pending for too long (1 hour)
+    await client.query(`
+      UPDATE dino_transaction_queue
+      SET status = 'failed',
+          retry_after = EXTRACT(EPOCH FROM NOW()) * 1000 + ${RETRY_CONFIG.INITIAL_DELAY}
+      WHERE status = 'pending'
+      AND timestamp < (EXTRACT(EPOCH FROM NOW()) * 1000 - 3600000)
+    `);
+    
+    logger.info('Cleaned up old transactions');
+  } catch (error) {
+    logger.error('Error cleaning up old transactions:', error);
+  } finally {
+    client.release();
+  }
+}
+
 // Master process setup - handles clustering and load balancing
 if (cluster.isPrimary) {
   logger.info(`Master ${process.pid} is running`);
-  
-  // Check if this is a worker-only process
-  if (process.env.WORKER_ONLY === 'true') {
-    logger.info('Running in worker-only mode, no transaction processing');
-  } else {
-    // Initialize blockchain manager in the primary process
-    blockchainManager.initialize().catch(err => {
-      logger.error('Failed to initialize blockchain manager:', err);
+
+  // Initialize database schema first
+  async function initializeDatabase() {
+    try {
+      
+    // Test the connection
+    pool.query('SELECT NOW()')
+      .then(() => {
+        logger.info('Database connection successful');
+        
+        // Ensure the retry_after column exists
+        ensureRetryAfterColumn()
+          .then(() => logger.info('Retry system database schema validated'))
+          .catch(err => logger.error('Failed to setup retry system database schema:', err));
+      })      
+      // Check if this is a worker-only process
+      if (process.env.WORKER_ONLY === 'true') {
+        logger.info('Running in worker-only mode, no transaction processing');
+      } else {
+        // Initialize blockchain manager in the primary process
+        blockchainManager.initialize().catch(err => {
+          logger.error('Failed to initialize blockchain manager:', err);
+          process.exit(1);
+        });
+        
+        // Initialize the retry system
+        initRetrySystem();
+      }
+      
+      // Then fork worker processes AFTER schema is ready
+      for (let i = 0; i < WORKER_COUNT; i++) {
+        cluster.fork();
+      }
+    } catch (err) {
+      logger.error('Failed to initialize database schema:', err);
       process.exit(1);
-    });
+    }
   }
-
-  // Fork workers for handling WebSocket connections
-  for (let i = 0; i < WORKER_COUNT; i++) {
-    cluster.fork();
-  }
-
+  
+  initializeDatabase();
+  
+  // Setup worker exit handling
   cluster.on('exit', (worker, code, signal) => {
     logger.warn(`Worker ${worker.process.pid} died with code ${code} and signal ${signal}`);
     // Replace dead worker
     cluster.fork();
   });
   
-  // Setup cleanup job
+  // Setup enhanced cleanup job
   setInterval(async () => {
     try {
-      const client = await pool.connect();
-      try {
-        await client.query('SELECT cleanup_old_transactions()');
-        logger.info('Cleaned up old transactions');
-      } finally {
-        client.release();
-      }
+      await cleanupOldTransactions();
     } catch (err) {
       logger.error('Error running cleanup job:', err);
     }
   }, CLEANUP_INTERVAL);
-  
 } else {
   // Worker process - handles WebSocket connections
   logger.info(`Worker ${process.pid} started`);
@@ -590,9 +908,7 @@ if (cluster.isPrimary) {
   // Track connected clients
   const connectedClients = new Map();
 
-  
-
-// WebSocket event handlers
+  // WebSocket event handlers
   io!.on('connection', async (socket: ClientSocket) => {
     logger.info(`Client connected: ${socket.id}`);
     
@@ -665,178 +981,178 @@ if (cluster.isPrimary) {
       }
     });
     
-   // Handle game session start
-socket.on('client:gameStart', async (data) => {
-  try {
-    const { gameId, playerAddress } = data;
-    
-    // Basic validation
-    if (!gameId || !playerAddress) {
-      socket.emit('server:error', {
-        message: 'Invalid game start request: missing gameId or playerAddress'
-      });
-      return;
-    }
-
-    logger.info(`Game start request: gameId=${gameId}, player=${playerAddress}`);
-    
-    // Get or create client info
-    let clientInfo = connectedClients.get(socket.id);
-    if (!clientInfo) {
-      // Create new client info if it doesn't exist
-      clientInfo = {
-        id: socket.id,
-        playerAddress: null,
-        gameId: null,
-        connectedAt: Date.now()
-      };
-      connectedClients.set(socket.id, clientInfo);
-    }
-    
-    // Update client info
-    clientInfo.playerAddress = playerAddress;
-    clientInfo.gameId = gameId;
-    connectedClients.set(socket.id, clientInfo);
-    
-    // Join game-specific room
-    socket.join(`game:${gameId}`);
-    socket.join(`player:${playerAddress}`); // Also join the player-specific room
-    
-    // If in DEV mode, skip database operations
-    if (DEV_MODE) {
-      logger.info(`[DEV MODE] Skipping database operations for game ${gameId}`);
-      
-      // Send immediate success response
-      socket.emit('server:gameStart', {
-        status: 'started',
-        gameId,
-        timestamp: Date.now()
-      });
-      
-      logger.info(`[DEV MODE] Game ${gameId} started for player ${playerAddress}`);
-      return;
-    }
-    
-    // Database operations with timeout protection
-    const dbOperationsPromise = (async () => {
-      let client;
+    // Handle game session start
+    socket.on('client:gameStart', async (data) => {
       try {
-        client = await pool.connect();
+        const { gameId, playerAddress } = data;
         
-        // First check if session exists
-        const sessionResult = await client.query(
-          'SELECT * FROM dino_websocket_sessions WHERE session_id = $1',
-          [socket.id]
-        );
+        // Basic validation
+        if (!gameId || !playerAddress) {
+          socket.emit('server:error', {
+            message: 'Invalid game start request: missing gameId or playerAddress'
+          });
+          return;
+        }
+
+        logger.info(`Game start request: gameId=${gameId}, player=${playerAddress}`);
         
-        // Begin transaction
-        await client.query('BEGIN');
+        // Get or create client info
+        let clientInfo = connectedClients.get(socket.id);
+        if (!clientInfo) {
+          // Create new client info if it doesn't exist
+          clientInfo = {
+            id: socket.id,
+            playerAddress: null,
+            gameId: null,
+            connectedAt: Date.now()
+          };
+          connectedClients.set(socket.id, clientInfo);
+        }
         
-        try {
-          // Insert or update session info
-          if (sessionResult.rowCount === 0) {
-            // Session doesn't exist, insert new record
-            await client.query(
-              'INSERT INTO dino_websocket_sessions (session_id, player_address, status) VALUES ($1, $2, $3)',
-              [socket.id, playerAddress, 'active']
-            );
-          } else {
-            // Session exists, update it
-            await client.query(
-              'UPDATE dino_websocket_sessions SET player_address = $1, status = $2, last_active_at = NOW() WHERE session_id = $3',
-              [playerAddress, 'active', socket.id]
-            );
-          }
+        // Update client info
+        clientInfo.playerAddress = playerAddress;
+        clientInfo.gameId = gameId;
+        connectedClients.set(socket.id, clientInfo);
+        
+        // Join game-specific room
+        socket.join(`game:${gameId}`);
+        socket.join(`player:${playerAddress}`); // Also join the player-specific room
+        
+        // If in DEV mode, skip database operations
+        if (DEV_MODE) {
+          logger.info(`[DEV MODE] Skipping database operations for game ${gameId}`);
           
-          // Check for any existing active game sessions for this player and close them
-          await client.query(
-            `UPDATE dino_player_sessions 
-             SET end_time = NOW(), completed = false 
-             WHERE player_address = $1 AND end_time IS NULL AND game_id != $2`,
-            [playerAddress, gameId]
-          );
+          // Send immediate success response
+          socket.emit('server:gameStart', {
+            status: 'started',
+            gameId,
+            timestamp: Date.now()
+          });
           
-          // Then create the new game session
+          logger.info(`[DEV MODE] Game ${gameId} started for player ${playerAddress}`);
+          return;
+        }
+        
+        // Database operations with timeout protection
+        const dbOperationsPromise = (async () => {
+          let client;
           try {
-            await client.query(
-              'INSERT INTO dino_player_sessions (player_address, game_id) VALUES ($1, $2)',
-              [playerAddress, gameId]
-            );
-          } catch (err) {
-            logger.warn(`Game session may already exist for player ${playerAddress}, game ${gameId}`);
+            client = await pool.connect();
             
-            // Check if this game session already exists
-            const existingGame = await client.query(
-              'SELECT * FROM dino_player_sessions WHERE player_address = $1 AND game_id = $2',
-              [playerAddress, gameId]
+            // First check if session exists
+            const sessionResult = await client.query(
+              'SELECT * FROM dino_websocket_sessions WHERE session_id = $1',
+              [socket.id]
             );
             
-            if (existingGame.rowCount === 0) {
-              // Unexpected error, rethrow to be caught in outer catch
-              throw err;
+            // Begin transaction
+            await client.query('BEGIN');
+            
+            try {
+              // Insert or update session info
+              if (sessionResult.rowCount === 0) {
+                // Session doesn't exist, insert new record
+                await client.query(
+                  'INSERT INTO dino_websocket_sessions (session_id, player_address, status) VALUES ($1, $2, $3)',
+                  [socket.id, playerAddress, 'active']
+                );
+              } else {
+                // Session exists, update it
+                await client.query(
+                  'UPDATE dino_websocket_sessions SET player_address = $1, status = $2, last_active_at = NOW() WHERE session_id = $3',
+                  [playerAddress, 'active', socket.id]
+                );
+              }
+              
+              // Check for any existing active game sessions for this player and close them
+              await client.query(
+                `UPDATE dino_player_sessions 
+                 SET end_time = NOW(), completed = false 
+                 WHERE player_address = $1 AND end_time IS NULL AND game_id != $2`,
+                [playerAddress, gameId]
+              );
+              
+              // Then create the new game session
+              try {
+                await client.query(
+                  'INSERT INTO dino_player_sessions (player_address, game_id) VALUES ($1, $2)',
+                  [playerAddress, gameId]
+                );
+              } catch (err) {
+                logger.warn(`Game session may already exist for player ${playerAddress}, game ${gameId}`);
+                
+                // Check if this game session already exists
+                const existingGame = await client.query(
+                  'SELECT * FROM dino_player_sessions WHERE player_address = $1 AND game_id = $2',
+                  [playerAddress, gameId]
+                );
+                
+                if (existingGame.rowCount === 0) {
+                  // Unexpected error, rethrow to be caught in outer catch
+                  throw err;
+                }
+              }
+              
+              // Commit transaction
+              await client.query('COMMIT');
+              return true;
+              
+            } catch (innerErr) {
+              // Rollback on error
+              await client.query('ROLLBACK');
+              throw innerErr;
             }
+            
+          } catch (err) {
+            logger.error(`Database error in game start for ${gameId}:`, err);
+            throw err;
+          } finally {
+            if (client) client.release();
           }
+        })();
+        
+        // Add timeout to database operations
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Database operation timeout')), DB_OPERATIONS_TIMEOUT);
+        });
+        
+        // Race the database operations against the timeout
+        try {
+          await Promise.race([dbOperationsPromise, timeoutPromise]);
           
-          // Commit transaction
-          await client.query('COMMIT');
-          return true;
+          // Database operations completed successfully or timed out
+          // Either way, we'll acknowledge the game start to prevent client-side timeout
+          socket.emit('server:gameStart', {
+            status: 'started',
+            gameId,
+            timestamp: Date.now()
+          });
           
-        } catch (innerErr) {
-          // Rollback on error
-          await client.query('ROLLBACK');
-          throw innerErr;
+          logger.info(`Game ${gameId} started for player ${playerAddress}`);
+          
+        } catch (error) {
+          logger.error(`Error starting game ${gameId}:`, error);
+          
+          // Still acknowledge the game start but with a different status
+          // This is better than letting the client time out
+          socket.emit('server:gameStart', {
+            status: 'started',
+            gameId,
+            timestamp: Date.now(),
+          });
+          
+          logger.warn(`Game ${gameId} started with warnings for player ${playerAddress}`);
         }
         
       } catch (err) {
-        logger.error(`Database error in game start for ${gameId}:`, err);
-        throw err;
-      } finally {
-        if (client) client.release();
+        logger.error(`Unexpected error in game start handler:`, err);
+        
+        // Send error to client
+        socket.emit('server:error', {
+          message: 'Failed to start game: Server error'
+        });
       }
-    })();
-    
-    // Add timeout to database operations
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Database operation timeout')), DB_OPERATIONS_TIMEOUT);
     });
-    
-    // Race the database operations against the timeout
-    try {
-      await Promise.race([dbOperationsPromise, timeoutPromise]);
-      
-      // Database operations completed successfully or timed out
-      // Either way, we'll acknowledge the game start to prevent client-side timeout
-      socket.emit('server:gameStart', {
-        status: 'started',
-        gameId,
-        timestamp: Date.now()
-      });
-      
-      logger.info(`Game ${gameId} started for player ${playerAddress}`);
-      
-    } catch (error) {
-      logger.error(`Error starting game ${gameId}:`, error);
-      
-      // Still acknowledge the game start but with a different status
-      // This is better than letting the client time out
-      socket.emit('server:gameStart', {
-        status: 'started',
-        gameId,
-        timestamp: Date.now(),
-      });
-      
-      logger.warn(`Game ${gameId} started with warnings for player ${playerAddress}`);
-    }
-    
-  } catch (err) {
-    logger.error(`Unexpected error in game start handler:`, err);
-    
-    // Send error to client
-    socket.emit('server:error', {
-      message: 'Failed to start game: Server error'
-    });
-  }
-});
     
     // Handle player jump
     socket.on('client:jump', async (data) => {
