@@ -40,7 +40,7 @@ class HighScorePanel extends BaseScorePanel {
       .bitmapText(0, 0, 'joystix', '', 32)
       .setTintFill(0x757575)
       .setOrigin(1, 0)
-      .setDepth(9999);
+      .setDepth(9980);
   }
 
   /**

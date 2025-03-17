@@ -172,7 +172,6 @@ const Leaderboard = () => {
               <th>#</th>
               <th>PLAYER</th>
               <th>SCORE</th>
-              {!isMobile && <th>DATE</th>}
             </tr>
           </thead>
           <tbody>
@@ -181,7 +180,6 @@ const Leaderboard = () => {
                 <td>{entry.rank}</td>
                 <td className="player-address">{formatAddress(entry.player)}</td>
                 <td>{entry.score.toLocaleString()}</td>
-                {!isMobile && <td>{entry.timestamp}</td>}
               </tr>
             ))}
           </tbody>

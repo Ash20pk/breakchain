@@ -85,7 +85,7 @@ class UI {
    * Handle game over
    */
   onGameOver() {
-    // Method left for future use
+
   }
   
   /**
@@ -104,6 +104,11 @@ class UI {
     this.scene.events.off(CONFIG.EVENTS.GAME_RESTART, this.onGameRestart, this);
     this.scene.events.off(CONFIG.EVENTS.GAME_OVER, this.onGameOver, this);
     this.scene.events.off(CONFIG.EVENTS.GAME_INTRO_START, this.onIntroStart, this);
+
+    // Clean up UI components
+    if (this.gameOverPanel) {
+      this.gameOverPanel.destroy();
+    }
   }
 }
 

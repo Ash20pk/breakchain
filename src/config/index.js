@@ -4,7 +4,6 @@ import { isProd } from '../utils';
 
 const config = {
   title: 'Dino',
-  url: 'https://github.com/Autapomorph/dino',
   version: '1.2.1',
   type: Phaser.AUTO,
   backgroundColor: '#fff',

@@ -149,35 +149,59 @@ class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * Creates intro text that is responsive to different screen sizes
+   */
   createIntroText() {
     // Only create if we're in the initial start state
     if (!this.isInitialStart) return;
     
     const { width, height } = this.scale.gameSize;
+    const isMobile = width < 600;
     
-    // Create intro text for players
+    // Adjust font sizes for mobile screens
+    const titleFontSize = isMobile ? 24 : 32;
+    const instructionFontSize = isMobile ? 14 : 16; // Increased from 12 to 14 for better visibility
+    
+    // Adjust position and alignment for different screen sizes
+    const titlePositionX = width * 0.5;
+    const titlePositionY = height * (isMobile ? 0.35 : 0.4);
+    const titleOrigin = { x: 0.5, y: 0.5 }; // Center align for all screens
+    
+    const instructionPositionX = width * 0.5;
+    const instructionPositionY = height * (isMobile ? 0.55 : 0.6);
+    const instructionOrigin = { x: 0.5, y: 0.5 }; // Center align for all screens
+    
+    // Create intro text for players with responsive sizing
     this.introText = this.add.bitmapText(
-      width * 0.5, // Center horizontally
-      height * 0.4,
+      titlePositionX,
+      titlePositionY,
       'joystix',
       'DINO RUNNER',
-      32
-    ).setOrigin(0.6, 0.6).setTint(0x535353).setDepth(900);
+      titleFontSize
+    )
+    .setOrigin(titleOrigin.x, titleOrigin.y)
+    .setTint(0x535353)
+    .setDepth(900);
     
-    // Add instruction text with blinking effect
+    // Add instruction text with blinking effect and responsive sizing
+    const instructionText = isMobile ? 'TAP TO START' : 'PRESS SPACE OR UP TO START';
     this.startText = this.add.bitmapText(
-      width * 0.5,
-      height * 0.6,
+      instructionPositionX,
+      instructionPositionY,
       'joystix',
-      'PRESS SPACE OR UP TO START',
-      16
-    ).setOrigin(0.6, 0.6).setTint(0x535353).setDepth(900);
+      instructionText,
+      instructionFontSize
+    )
+    .setOrigin(instructionOrigin.x, instructionOrigin.y)
+    .setTint(0x535353)
+    .setDepth(900);
     
-    // Create blinking effect for the start text
+    // Create blinking effect for the start text - more noticeable on mobile
     this.tweens.add({
       targets: this.startText,
-      alpha: { from: 1, to: 0.3 },
-      duration: 800,
+      alpha: { from: 1, to: isMobile ? 0.4 : 0.3 }, // Less transparency on mobile
+      duration: isMobile ? 600 : 800, // Faster blinking on mobile
       yoyo: true,
       repeat: -1
     });
@@ -372,16 +396,35 @@ class GameScene extends Phaser.Scene {
   onResizeGameObjects(gameSize) {
     this.ui.resize(gameSize);
     this.ground.resize(gameSize);
-
-    // Resize intro text elements
+  
+    // Determine if we're in mobile mode
+    const isMobile = gameSize.width < 600;
+  
+    // Resize intro text elements with responsive positioning
     if (this.introText) {
-      this.introText.setPosition(gameSize.width * 0.5, gameSize.height * 0.4);
+      this.introText.setPosition(gameSize.width * 0.5, gameSize.height * (isMobile ? 0.35 : 0.4));
+      this.introText.setFontSize(isMobile ? 24 : 32);
     }
+    
     if (this.blockchainText) {
-      this.blockchainText.setPosition(gameSize.width * 0.5, gameSize.height * 0.48);
+      this.blockchainText.setPosition(gameSize.width * 0.5, gameSize.height * (isMobile ? 0.45 : 0.48));
+      this.blockchainText.setFontSize(isMobile ? 10 : 14);
     }
+    
     if (this.startText) {
-      this.startText.setPosition(gameSize.width * 0.5, gameSize.height * 0.6);
+      this.startText.setPosition(gameSize.width * 0.5, gameSize.height * (isMobile ? 0.55 : 0.6));
+      this.startText.setFontSize(isMobile ? 12 : 16);
+      
+      // Update instruction text for mobile if needed
+      if (isMobile && this.startText.text !== 'TAP TO START') {
+        this.startText.setText('TAP TO START');
+        // Ensure the text is visible and large enough
+        this.startText.setFontSize(14); // Slightly larger for better visibility
+        this.startText.setTint(0x000000); // Darker color for better contrast
+      } else if (!isMobile && this.startText.text !== 'PRESS SPACE OR UP TO START') {
+        this.startText.setText('PRESS SPACE OR UP TO START');
+        this.startText.setTint(0x535353); // Reset to original color
+      }
     }
   }
 }

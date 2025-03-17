@@ -20,6 +20,7 @@ class BootScene extends Phaser.Scene {
 
   preload() {
     this.load.atlas('dino', 'assets/sprites/dino-atlas.png', 'assets/sprites/dino-atlas.json');
+    this.load.image('dino-dead', 'assets/sprites/_raw/player/dead/dino-dead.png');
 
     this.load.bitmapFont(
       'joystix',

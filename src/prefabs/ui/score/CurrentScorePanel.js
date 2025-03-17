@@ -17,7 +17,7 @@ class CurrentScorePanel extends BaseScorePanel {
     this.scoreText = this.scene.add
       .bitmapText(0, 0, 'joystix', '', 32)
       .setOrigin(1, 0)
-      .setDepth(9999);
+      .setDepth(9980);
   }
 
   /**
