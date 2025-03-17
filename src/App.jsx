@@ -7,7 +7,6 @@ import './App.css';
 import Game from './Game';
 import config from './config';
 import Leaderboard from './components/LeaderboardComponent';
-import MobileControls from './components/MobileControls';
 
 function App() {
   const [gameStarted, setGameStarted] = useState(false);
@@ -100,7 +99,7 @@ function App() {
           const next = prev + 1;
           return next > 100 ? 100 : next;
         });
-      }, 35); // Approximately 3.5 seconds to reach 100%
+      }, 15); // Approximately 3.5 seconds to reach 100%
       
       // Prepare for transition
       const transitionTimer = setTimeout(() => {
@@ -155,7 +154,6 @@ function App() {
         <div className="game-container" ref={gameContainerRef}>
           <Toaster position="top-right" richColors />
         </div>
-        <MobileControls onJump={handleJump} onDuck={handleDuck} />
       </>
     );
   }
