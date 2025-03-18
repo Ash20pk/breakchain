@@ -12,6 +12,7 @@ import { createClient } from 'redis';
 import winston from 'winston';
 import os from 'os';
 import cluster from 'cluster';
+import { initAnalytics, getAnalytics } from './analytics';
 
 dotenv.config();
 
@@ -27,6 +28,9 @@ const logger = winston.createLogger({
     new winston.transports.File({ filename: 'transaction-server.log' })
   ]
 });
+
+// Initialize analytics service
+const analyticsService = initAnalytics(logger);
 
 // Constants
 const PORT = parseInt(process.env.PORT || '3001');
@@ -400,6 +404,19 @@ class BlockchainManager {
               });
               
               hash = await wallet.writeContract(request);
+
+              // After successful processing, update PostHog
+              if (analyticsService) {
+                analyticsService.trackTransaction({
+                  id: tx.id,
+                  player_address: tx.player_address,
+                  game_id: tx.game_id,
+                  type: tx.type,
+                  status: 'sent',
+                  hash,
+                  score: tx.score
+                });
+              }
               
             } else if (tx.type === TX_TYPE_GAME_OVER) {
               // Record game over transaction
@@ -416,6 +433,19 @@ class BlockchainManager {
               });
               
               hash = await wallet.writeContract(request);
+
+              // After successful processing, update PostHog
+              if (analyticsService) {
+                analyticsService.trackTransaction({
+                  id: tx.id,
+                  player_address: tx.player_address,
+                  game_id: tx.game_id,
+                  type: tx.type,
+                  status: 'sent',
+                  hash,
+                  score: tx.score
+                });
+              }
             }
             
             // Update transaction status in database
@@ -456,12 +486,26 @@ class BlockchainManager {
             
           } catch (err) {
             logger.error(`Wallet ${walletIndex} error processing transaction ${tx.id}:`, err);
+
+            const errorMessage = err instanceof Error ? err.message : 'Unknown transaction error';
             
             // Mark transaction as failed
             await client.query(
               'UPDATE dino_transaction_queue SET status = $1, retries = retries + 1 WHERE id = $2',
               ['failed', tx.id]
             );
+
+            // Track failed transaction
+            if (analyticsService) {
+              analyticsService.trackTransaction({
+                id: tx.id,
+                player_address: tx.player_address,
+                game_id: tx.game_id,
+                type: tx.type,
+                status: 'failed',
+                error: errorMessage
+              });
+            }
             
             // Publish failure to Redis if enabled
             if (USE_REDIS) {
@@ -811,6 +855,19 @@ socket.on('client:gameStart', async (data) => {
         gameId,
         timestamp: Date.now()
       });
+
+      // Track game start in PostHog
+      if (analyticsService) {
+        analyticsService.trackGameStart({
+          playerAddress: data.playerAddress,
+          gameId: data.gameId
+        });
+        
+        // Identify the player
+        analyticsService.identifyPlayer(data.playerAddress, {
+          first_seen: new Date().toISOString()
+        });
+      }
       
       logger.info(`Game ${gameId} started for player ${playerAddress}`);
       
@@ -891,6 +948,19 @@ socket.on('client:gameStart', async (data) => {
             gameId,
             timestamp: Date.now()
           });
+          
+          // Track jump in PostHog
+          if (analyticsService) {
+            analyticsService.trackTransaction({
+              id: txId,
+              player_address: playerAddress,
+              game_id: gameId,
+              type: TX_TYPE_JUMP,
+              score: score,
+              height: height,
+              status: 'pending'
+            });
+          }
           
           logger.info(`Jump recorded for ${playerAddress}, score: ${score}, height: ${height}`);
         } finally {
@@ -993,6 +1063,18 @@ socket.on('client:gameStart', async (data) => {
             isHighScore,
             timestamp: Date.now()
           });
+
+          // Track game over in PostHog
+          if (analyticsService) {
+            analyticsService.trackTransaction({
+              id: txId,
+              player_address: playerAddress,
+              game_id: gameId,
+              type: TX_TYPE_GAME_OVER,
+              score: finalScore,
+              status: 'pending'
+            });
+          }
           
           logger.info(`Game over recorded for ${playerAddress}, score: ${finalScore}`);
         } finally {
@@ -1110,4 +1192,21 @@ socket.on('client:gameStart', async (data) => {
   
   // Broadcast wallet status every 5 seconds
   setInterval(broadcastWalletStatus, 5000);
+
+  // Ensure proper shutdown
+  process.on('SIGTERM', async () => {
+    logger.info('SIGTERM received, shutting down');
+    if (analyticsService) {
+      await analyticsService.shutdown();
+    }
+    process.exit(0);
+  });
+
+  process.on('SIGINT', async () => {
+    logger.info('SIGINT received, shutting down');
+    if (analyticsService) {
+      await analyticsService.shutdown();
+    }
+    process.exit(0);
+  });
 }

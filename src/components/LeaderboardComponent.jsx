@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { createPublicClient, http } from 'viem';
 import { SomniaChain } from '../utils/chain';
 import { DinoRunnerABI } from './abi/DinoRunnerABI';
-import './Leaderboard.css'; // Make sure to use the optimized CSS
+import './Leaderboard.css';
 
 const Leaderboard = () => {
   const [leaderboard, setLeaderboard] = useState([]);
@@ -11,30 +11,25 @@ const Leaderboard = () => {
   const [error, setError] = useState(null);
   const [retryCount, setRetryCount] = useState(0);
   
-  // Create client with the correct transport configuration and memoize it
   const client = useMemo(() => createPublicClient({
     chain: SomniaChain,
     transport: http("https://dream-rpc.somnia.network", {
-      timeout: 15000, // 15 second timeout
+      timeout: 15000,
       retryCount: 3,
       retryDelay: 1000,
     })
   }), []);
 
-  // Contract address
   const contractAddress = import.meta.env.VITE_CONTRACT_ADDRESS;
 
-  // Function to format addresses for display - memoized for performance
   const formatAddress = useCallback((address) => {
     if (!address) return "";
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   }, []);
 
-  // Function to format dates
   const formatDate = useCallback((timestamp) => {
     try {
       const date = new Date(Number(timestamp) * 1000);
-      // Mobile-friendly date format
       return date.toLocaleDateString(undefined, { 
         month: 'short', 
         day: 'numeric'
@@ -45,14 +40,12 @@ const Leaderboard = () => {
     }
   }, []);
 
-  // Function to handle retrying the data fetch
   const handleRetry = useCallback(() => {
     setLoading(true);
     setError(null);
     setRetryCount(prev => prev + 1);
   }, []);
 
-  // Detect if we're on a mobile device
   const isMobile = useMemo(() => {
     if (typeof window === 'undefined') return false;
     return window.innerWidth <= 768 || 
@@ -71,34 +64,43 @@ const Leaderboard = () => {
       try {
         console.log("Fetching leaderboard data...");
         
-        // Use viem to call the getLeaderboard function from the contract
         const data = await client.readContract({
           address: contractAddress,
           abi: DinoRunnerABI,
           functionName: 'getLeaderboard',
         });
         
+        console.log("Leaderboard data:", data);
         if (!data || !Array.isArray(data)) {
           throw new Error("Invalid data received from blockchain");
         }
 
-        // Transform the data for display
         const formattedLeaderboard = data
-          .filter(entry => entry && typeof entry === 'object') // Filter valid entries
-          .map((entry, index) => ({
-            rank: index + 1,
-            player: entry.player,
-            score: Number(entry.score || 0),
-            timestamp: entry.timestamp ? formatDate(entry.timestamp) : 'Unknown'
-          }))
-          .sort((a, b) => b.score - a.score); // Ensure sorting by score (descending)
+          .filter(entry => entry && typeof entry === 'object')
+          .reduce((acc, entry) => {
+            const existingEntry = acc.find(e => e.player === entry.player);
+            if (!existingEntry || Number(entry.score) > existingEntry.score) {
+              if (existingEntry) {
+                existingEntry.score = Number(entry.score);
+                existingEntry.timestamp = formatDate(entry.timestamp);
+              } else {
+                acc.push({
+                  player: entry.player,
+                  score: Number(entry.score),
+                  timestamp: formatDate(entry.timestamp)
+                });
+              }
+            }
+            return acc;
+          }, [])
+          .sort((a, b) => b.score - a.score)
+          .map((entry, index) => ({ ...entry, rank: index + 1 }));
 
         setLeaderboard(formattedLeaderboard);
         setLoading(false);
       } catch (err) {
         console.error("Error fetching leaderboard:", err);
         
-        // Provide a more user-friendly error message
         if (err.message?.includes('network') || err.message?.includes('timeout')) {
           setError("Network error. Please check your connection and try again.");
         } else if (err.message?.includes('contract')) {
@@ -114,7 +116,6 @@ const Leaderboard = () => {
     fetchLeaderboard();
   }, [client, contractAddress, retryCount, formatDate]);
 
-  // Render loading state
   if (loading) {
     return (
       <div className="blockchain-leaderboard">
@@ -127,7 +128,6 @@ const Leaderboard = () => {
     );
   }
 
-  // Render error state
   if (error) {
     return (
       <div className="blockchain-leaderboard">
@@ -145,7 +145,6 @@ const Leaderboard = () => {
     );
   }
 
-  // Render empty state
   if (!leaderboard || leaderboard.length === 0) {
     return (
       <div className="blockchain-leaderboard">
@@ -161,7 +160,6 @@ const Leaderboard = () => {
     );
   }
 
-  // Render leaderboard
   return (
     <div className="blockchain-leaderboard">
       <h2>TOP SCORES</h2>
