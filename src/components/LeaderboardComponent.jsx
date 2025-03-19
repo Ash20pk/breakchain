@@ -1,59 +1,21 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { createPublicClient, http } from 'viem';
-import { SomniaChain } from '../utils/chain';
-import { DinoRunnerABI } from './abi/DinoRunnerABI';
+import React, { useState, useEffect, useCallback } from 'react';
 import './Leaderboard.css';
-import BlockchainSync, { initialize as initializeBlockchain } from '../hooks/BlockchainSync';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
 
 const Leaderboard = () => {
   const [leaderboard, setLeaderboard] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [retryCount, setRetryCount] = useState(0);
-  const [usernames, setUsernames] = useState({});
 
-  // Move formatAddress before its first use
   const formatAddress = useCallback((address) => {
     if (!address) return "";
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
-  }, []);
-  
-  const client = useMemo(() => createPublicClient({
-    chain: SomniaChain,
-    transport: http("https://dream-rpc.somnia.network", {
-      timeout: 15000,
-      retryCount: 3,
-      retryDelay: 1000,
-    })
-  }), []);
-
-  // Initialize blockchain connection
-  useEffect(() => {
-    console.log("Initializing blockchain connection...");
-    BlockchainSync.initialize();
-  }, []);
-
-  const processedLeaderboard = useMemo(() => {
-    return leaderboard.map(entry => ({
-      ...entry,
-      displayName: usernames[entry.player] || formatAddress(entry.player)
-    }));
-  }, [leaderboard, usernames, formatAddress]);
-
-  // Rest of the component remains the same...
-  const contractAddress = import.meta.env.VITE_CONTRACT_ADDRESS;
-
-  const formatDate = useCallback((timestamp) => {
-    try {
-      const date = new Date(Number(timestamp) * 1000);
-      return date.toLocaleDateString(undefined, { 
-        month: 'short', 
-        day: 'numeric'
-      });
-    } catch (err) {
-      console.error("Error formatting date:", err);
-      return "Unknown";
-    }
   }, []);
 
   const handleRetry = useCallback(() => {
@@ -62,103 +24,54 @@ const Leaderboard = () => {
     setRetryCount(prev => prev + 1);
   }, []);
 
-  const isMobile = useMemo(() => {
-    if (typeof window === 'undefined') return false;
-    return window.innerWidth <= 768 || 
-           ('ontouchstart' in window) || 
-           (navigator.maxTouchPoints > 0);
-  }, []);
+  const fetchLeaderboard = async () => {
+    try {
+      console.log("Fetching leaderboard data from Supabase...");
+      
+      const { data: leaderboardData, error } = await supabase
+        .from('dino_leaderboard')
+        .select(`
+          player_address,
+          score,
+          dino_player_profiles!inner(username)
+        `)
+        .order('score', { ascending: false })
+        .limit(10);
+      
+      if (error) throw error;
+      
+      console.log("Leaderboard data:", leaderboardData);
+      if (!leaderboardData || !Array.isArray(leaderboardData)) {
+        throw new Error("Invalid data received from database");
+      }
 
-  const getUsername = async (address) => {
-    const result = await BlockchainSync.checkUsername(address);
-    console.log("Username for", address, "is", result.username);
-    return result.username;
+      // Process the leaderboard data
+      const processedEntries = leaderboardData.map((entry, index) => ({
+        rank: index + 1,
+        player: entry.player_address,
+        score: Number(entry.score),
+        displayName: entry.dino_player_profiles?.username || formatAddress(entry.player_address)
+      }));
+
+      setLeaderboard(processedEntries);
+      setLoading(false);
+    } catch (err) {
+      console.error("Error fetching leaderboard:", err);
+      
+      if (err.message?.includes('network') || err.message?.includes('timeout')) {
+        setError("Network error. Please check your connection and try again.");
+      } else {
+        setError(`Failed to fetch leaderboard: ${err.message || "Unknown error"}`);
+      }
+      
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
-    const fetchUsernames = async () => {
-      const usernamePromises = leaderboard.map(async (entry) => {
-        const username = await getUsername(entry.player);
-        return { address: entry.player, username };
-      });
-
-      const usernameResults = await Promise.all(usernamePromises);
-      
-      const usernameMap = usernameResults.reduce((acc, result) => {
-        acc[result.address] = result.username;
-        return acc;
-      }, {});
-
-      setUsernames(usernameMap);
-    };
-
-    fetchUsernames();
-  }, [leaderboard]);
-
-  useEffect(() => {
-    const fetchLeaderboard = async () => {
-      if (!contractAddress) {
-        setError("Contract address not configured");
-        setLoading(false);
-        return;
-      }
-
-      try {
-        console.log("Fetching leaderboard data...");
-        
-        const data = await client.readContract({
-          address: contractAddress,
-          abi: DinoRunnerABI,
-          functionName: 'getLeaderboard',
-        });
-        
-        console.log("Leaderboard data:", data);
-        if (!data || !Array.isArray(data)) {
-          throw new Error("Invalid data received from blockchain");
-        }
-
-        const formattedLeaderboard = data
-          .filter(entry => entry && typeof entry === 'object')
-          .reduce((acc, entry) => {
-            const existingEntry = acc.find(e => e.player === entry.player);
-            if (!existingEntry || Number(entry.score) > existingEntry.score) {
-              if (existingEntry) {
-                existingEntry.score = Number(entry.score);
-                existingEntry.timestamp = formatDate(entry.timestamp);
-              } else {
-                acc.push({
-                  player: entry.player,
-                  score: Number(entry.score),
-                  timestamp: formatDate(entry.timestamp)
-                });
-              }
-            }
-            return acc;
-          }, [])
-          .sort((a, b) => b.score - a.score)
-          .map((entry, index) => ({ ...entry, rank: index + 1 }));
-
-        setLeaderboard(formattedLeaderboard);
-        setLoading(false);
-      } catch (err) {
-        console.error("Error fetching leaderboard:", err);
-        
-        if (err.message?.includes('network') || err.message?.includes('timeout')) {
-          setError("Network error. Please check your connection and try again.");
-        } else if (err.message?.includes('contract')) {
-          setError("Contract error. The leaderboard data couldn't be accessed.");
-        } else {
-          setError(`Failed to fetch leaderboard: ${err.message || "Unknown error"}`);
-        }
-        
-        setLoading(false);
-      }
-    };
-
     fetchLeaderboard();
-  }, [client, contractAddress, retryCount, formatDate]);
+  }, [retryCount, formatAddress]);
 
-  // Render methods remain the same...
   if (loading) {
     return (
       <div className="blockchain-leaderboard">
@@ -216,7 +129,7 @@ const Leaderboard = () => {
             </tr>
           </thead>
           <tbody>
-            {processedLeaderboard.map((entry) => (
+            {leaderboard.map((entry) => (
               <tr 
                 key={`${entry.player}-${entry.score}`} 
                 className={entry.rank <= 3 ? `rank-${entry.rank}` : ''}

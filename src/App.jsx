@@ -20,6 +20,7 @@ function App() {
   const [showNamePrompt, setShowNamePrompt] = useState(false);
   const [ name, setName ] = useState('');
   const [blockchainInitialized, setBlockchainInitialized] = useState(false);
+  const [api, setApi] = useState(null);
   
   const gameContainerRef = useRef(null);
   const { address, isConnected } = useAccount();
@@ -28,21 +29,41 @@ function App() {
   useEffect(() => {
     const initialize = async () => {
       console.log("Initializing blockchain connection...");
-      await BlockchainSync.initialize();  
-      setBlockchainInitialized(true);
+      const api = await BlockchainSync.initialize();  
+      
+      if (api) {
+        setApi(api);
+        
+        // Add a small delay to allow connection
+        setTimeout(() => {
+          const connectionStatus = api.isConnected();
+          console.log('Blockchain connection status:', connectionStatus);
+          setBlockchainInitialized(connectionStatus);
+        }, 2000);
+      }
     };
     initialize();
   }, []);
   
   useEffect(() => {
     const checkUsername = async () => {
+      console.log('Checking username:', {
+        isConnected,
+        address,
+        blockchainInitialized
+      });
+  
       if (isConnected && address && blockchainInitialized) {
         try {
           const result = await BlockchainSync.checkUsername(address);
           
+          console.log('Username check result:', result);
+          
           if (!result.username) {
+            console.warn('No username found, showing prompt');
             setShowNamePrompt(true);
           } else {
+            console.log('Username found:', result.username);
             setName(result.username);
           }
         } catch (error) {
@@ -51,8 +72,11 @@ function App() {
       }
     };
   
-    checkUsername();
-  }, [isConnected, address]);
+    // Add a small delay to ensure everything is initialized
+    const timer = setTimeout(checkUsername, 500);
+  
+    return () => clearTimeout(timer);
+  }, [isConnected, address, blockchainInitialized]);
 
   const handleSaveName = async (name) => {
     try {
@@ -63,6 +87,7 @@ function App() {
       BlockchainSync.authenticateUser(address, name, (result) => {
         if (result.success) {
           setShowNamePrompt(false);
+          setName(name);
           toast.success('Username saved successfully');
         } else {
           console.error('Authentication failed:', result.message);

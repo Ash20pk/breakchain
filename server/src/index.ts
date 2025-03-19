@@ -782,80 +782,70 @@ if (cluster.isPrimary) {
     socket.on('client:auth', async (data) => {
       try {
         const { playerAddress, signature, username } = data;
-        
-        // In a real app, verify the signature here
-        // This is simplified for the example
-        const isValid = true; // validateSignature(playerAddress, signature);
-        
+        const normalizedAddress = playerAddress.toLowerCase(); // Normalize here
+    
+        // Use normalizedAddress everywhere
+        const isValid = true; // validateSignature(normalizedAddress, signature);
         if (isValid) {
-          // Update client info
           const clientInfo = connectedClients.get(socket.id);
           if (clientInfo) {
-            clientInfo.playerAddress = playerAddress;
+            clientInfo.playerAddress = normalizedAddress;
             connectedClients.set(socket.id, clientInfo);
           }
-          
-          // Store session in database
+    
           const client = await pool.connect();
           try {
             await client.query(
               'INSERT INTO dino_websocket_sessions (session_id, player_address, status) VALUES ($1, $2, $3)',
-              [socket.id, playerAddress, 'active']
+              [socket.id, normalizedAddress, 'active']
             );
-            
-            // Check if player already exists in profiles table
+    
             const profileResult = await client.query(
               'SELECT * FROM dino_player_profiles WHERE player_address = $1',
-              [playerAddress]
+              [normalizedAddress] // Use normalized address
             );
-            
-            // If player doesn't exist, create a new profile
+    
             if (profileResult.rows.length === 0) {
               logger.info(`Creating new player profile for ${playerAddress}`);
               await client.query(
                 'INSERT INTO dino_player_profiles (player_address, username, first_played_at, last_played_at) VALUES ($1, $2, NOW(), NOW())',
-                [playerAddress, username]
+                [normalizedAddress, username]
               );
-            } 
-            // If player exists and username is provided, update their username
-            else if (username) {
               logger.info(`Updating username for ${playerAddress} to ${username}`);
+            } else if (username) {
               await client.query(
                 'UPDATE dino_player_profiles SET username = $1, last_played_at = NOW() WHERE player_address = $2',
-                [username, playerAddress]
+                [username, normalizedAddress]
               );
             }
           } finally {
             client.release();
           }
-          
-          // Join player-specific room
-          socket.join(`player:${playerAddress}`);
+    
+          socket.join(`player:${normalizedAddress}`); // Use normalized address
 
           // THEN track analytics AFTER DB operation is complete
           if (analyticsService) {
-            analyticsService.identifyPlayer(playerAddress);
-            analyticsService.trackSessionStart(playerAddress, socket.id);
+            analyticsService.identifyPlayer(normalizedAddress);
+            analyticsService.trackSessionStart(normalizedAddress, socket.id);
           }
           
-          // Acknowledge successful auth
           socket.emit('server:auth', {
             status: 'authenticated',
-            playerAddress
+            playerAddress: normalizedAddress,
           });
-          
-          logger.info(`Client ${socket.id} authenticated as ${playerAddress}`);
+          logger.info(`Client ${socket.id} authenticated as ${normalizedAddress}`);
         } else {
           socket.emit('server:auth', {
             status: 'error',
-            message: 'Invalid signature'
+            message: 'Invalid signature',
           });
         }
       } catch (err) {
         logger.error(`Error in client authentication: ${err}`);
         socket.emit('server:auth', {
           status: 'error',
-          message: 'Authentication failed'
+          message: 'Authentication failed',
         });
       }
     });
@@ -866,7 +856,7 @@ if (cluster.isPrimary) {
         try {
           const result = await client.query(
             'SELECT username FROM dino_player_profiles WHERE player_address = $1',
-            [data.playerAddress]
+            [data.playerAddress.toLowerCase()]
           );
           
           const username = result.rows.length > 0 ? result.rows[0].username : null;
@@ -884,180 +874,183 @@ if (cluster.isPrimary) {
     });
     
    // Handle game session start
-socket.on('client:gameStart', async (data) => {
-  try {
-    const { gameId, playerAddress } = data;
-    
-    // Basic validation
-    if (!gameId || !playerAddress) {
-      socket.emit('server:error', {
-        message: 'Invalid game start request: missing gameId or playerAddress'
-      });
-      return;
-    }
-
-    logger.info(`Game start request: gameId=${gameId}, player=${playerAddress}`);
-    
-    // Get or create client info
-    let clientInfo = connectedClients.get(socket.id);
-    if (!clientInfo) {
-      // Create new client info if it doesn't exist
-      clientInfo = {
-        id: socket.id,
-        playerAddress: null,
-        gameId: null,
-        connectedAt: Date.now()
-      };
-      connectedClients.set(socket.id, clientInfo);
-    }
-    
-    // Update client info
-    clientInfo.playerAddress = playerAddress;
-    clientInfo.gameId = gameId;
-    connectedClients.set(socket.id, clientInfo);
-    
-    // Join game-specific room
-    socket.join(`game:${gameId}`);
-    socket.join(`player:${playerAddress}`); // Also join the player-specific room
-    
-    // Database operations with timeout protection
-    const dbOperationsPromise = (async () => {
-      let client;
+    socket.on('client:gameStart', async (data) => {
       try {
-        client = await pool.connect();
+        const { gameId, playerAddress } = data;
+
+        const normalizedAddress = playerAddress.toLowerCase();
         
-        // First check if session exists
-        const sessionResult = await client.query(
-          'SELECT * FROM dino_websocket_sessions WHERE session_id = $1',
-          [socket.id]
-        );
+        // Basic validation
+        if (!gameId || !normalizedAddress) {
+          socket.emit('server:error', {
+            message: 'Invalid game start request: missing gameId or playerAddress'
+          });
+          return;
+        }
+
+        logger.info(`Game start request: gameId=${gameId}, player=${normalizedAddress}`);
         
-        // Begin transaction
-        await client.query('BEGIN');
+        // Get or create client info
+        let clientInfo = connectedClients.get(socket.id);
+        if (!clientInfo) {
+          // Create new client info if it doesn't exist
+          clientInfo = {
+            id: socket.id,
+            playerAddress: null,
+            gameId: null,
+            connectedAt: Date.now()
+          };
+          connectedClients.set(socket.id, clientInfo);
+        }
         
-        try {
-          // Insert or update session info
-          if (sessionResult.rowCount === 0) {
-            // Session doesn't exist, insert new record
-            await client.query(
-              'INSERT INTO dino_websocket_sessions (session_id, player_address, status) VALUES ($1, $2, $3)',
-              [socket.id, playerAddress, 'active']
-            );
-          } else {
-            // Session exists, update it
-            await client.query(
-              'UPDATE dino_websocket_sessions SET player_address = $1, status = $2, last_active_at = NOW() WHERE session_id = $3',
-              [playerAddress, 'active', socket.id]
-            );
-          }
-          
-          // Check for any existing active game sessions for this player and close them
-          await client.query(
-            `UPDATE dino_player_sessions 
-             SET end_time = NOW(), completed = false 
-             WHERE player_address = $1 AND end_time IS NULL AND game_id != $2`,
-            [playerAddress, gameId]
-          );
-          
-          // Then create the new game session
+        // Update client info
+        clientInfo.playerAddress = normalizedAddress;
+        clientInfo.gameId = gameId;
+        connectedClients.set(socket.id, clientInfo);
+        
+        // Join game-specific room
+        socket.join(`game:${gameId}`);
+        socket.join(`player:${normalizedAddress}`); // Also join the player-specific room
+        
+        // Database operations with timeout protection
+        const dbOperationsPromise = (async () => {
+          let client;
           try {
-            await client.query(
-              'INSERT INTO dino_player_sessions (player_address, game_id) VALUES ($1, $2)',
-              [playerAddress, gameId]
-            );
-          } catch (err) {
-            logger.warn(`Game session may already exist for player ${playerAddress}, game ${gameId}`);
+            client = await pool.connect();
             
-            // Check if this game session already exists
-            const existingGame = await client.query(
-              'SELECT * FROM dino_player_sessions WHERE player_address = $1 AND game_id = $2',
-              [playerAddress, gameId]
+            // First check if session exists
+            const sessionResult = await client.query(
+              'SELECT * FROM dino_websocket_sessions WHERE session_id = $1',
+              [socket.id]
             );
             
-            if (existingGame.rowCount === 0) {
-              // Unexpected error, rethrow to be caught in outer catch
-              throw err;
+            // Begin transaction
+            await client.query('BEGIN');
+            
+            try {
+              // Insert or update session info
+              if (sessionResult.rowCount === 0) {
+                // Session doesn't exist, insert new record
+                await client.query(
+                  'INSERT INTO dino_websocket_sessions (session_id, player_address, status) VALUES ($1, $2, $3)',
+                  [socket.id, normalizedAddress, 'active']
+                );
+              } else {
+                // Session exists, update it
+                await client.query(
+                  'UPDATE dino_websocket_sessions SET player_address = $1, status = $2, last_active_at = NOW() WHERE session_id = $3',
+                  [normalizedAddress, 'active', socket.id]
+                );
+              }
+              
+              // Check for any existing active game sessions for this player and close them
+              await client.query(
+                `UPDATE dino_player_sessions 
+                SET end_time = NOW(), completed = false 
+                WHERE player_address = $1 AND end_time IS NULL AND game_id != $2`,
+                [normalizedAddress, gameId]
+              );
+              
+              // Then create the new game session
+              try {
+                await client.query(
+                  'INSERT INTO dino_player_sessions (player_address, game_id) VALUES ($1, $2)',
+                  [normalizedAddress, gameId]
+                );
+              } catch (err) {
+                logger.warn(`Game session may already exist for player ${normalizedAddress}, game ${gameId}`);
+                
+                // Check if this game session already exists
+                const existingGame = await client.query(
+                  'SELECT * FROM dino_player_sessions WHERE player_address = $1 AND game_id = $2',
+                  [normalizedAddress, gameId]
+                );
+                
+                if (existingGame.rowCount === 0) {
+                  // Unexpected error, rethrow to be caught in outer catch
+                  throw err;
+                }
+              }
+              
+              // Commit transaction
+              await client.query('COMMIT');
+              return true;
+              
+            } catch (innerErr) {
+              // Rollback on error
+              await client.query('ROLLBACK');
+              throw innerErr;
             }
+            
+          } catch (err) {
+            logger.error(`Database error in game start for ${gameId}:`, err);
+            throw err;
+          } finally {
+            if (client) client.release();
+          }
+        });
+        
+        // Add timeout to database operations
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Database operation timeout')), DB_OPERATIONS_TIMEOUT);
+        });
+        
+        // Race the database operations against the timeout
+        try {
+          await Promise.race([dbOperationsPromise, timeoutPromise]);
+          
+          // Database operations completed successfully or timed out
+          // Either way, we'll acknowledge the game start to prevent client-side timeout
+          socket.emit('server:gameStart', {
+            status: 'started',
+            gameId,
+            timestamp: Date.now()
+          });
+
+          // THEN track in analytics AFTER DB operations (even if they failed)
+          if (analyticsService) {
+            analyticsService.trackGameStart({
+              playerAddress: normalizedAddress,
+              gameId
+            });
+            
+            // Identify the player
+            analyticsService.identifyPlayer(normalizedAddress, {
+              first_seen: new Date().toISOString()
+            });
           }
           
-          // Commit transaction
-          await client.query('COMMIT');
-          return true;
+          logger.info(`Game ${gameId} started for player ${normalizedAddress}`);
           
-        } catch (innerErr) {
-          // Rollback on error
-          await client.query('ROLLBACK');
-          throw innerErr;
+        } catch (error) {
+          logger.error(`Error starting game ${gameId}:`, error);
+          
+          // Still acknowledge the game start but with a different status
+          // This is better than letting the client time out
+          socket.emit('server:gameStart', {
+            status: 'started',
+            gameId,
+            timestamp: Date.now(),
+          });
+          
+          logger.warn(`Game ${gameId} started with warnings for player ${normalizedAddress}`);
         }
         
       } catch (err) {
-        logger.error(`Database error in game start for ${gameId}:`, err);
-        throw err;
-      } finally {
-        if (client) client.release();
-      }
-    });
-    
-    // Add timeout to database operations
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Database operation timeout')), DB_OPERATIONS_TIMEOUT);
-    });
-    
-    // Race the database operations against the timeout
-    try {
-      await Promise.race([dbOperationsPromise, timeoutPromise]);
-      
-      // Database operations completed successfully or timed out
-      // Either way, we'll acknowledge the game start to prevent client-side timeout
-      socket.emit('server:gameStart', {
-        status: 'started',
-        gameId,
-        timestamp: Date.now()
-      });
-
-      // THEN track in analytics AFTER DB operations (even if they failed)
-      if (analyticsService) {
-        analyticsService.trackGameStart({
-          playerAddress,
-          gameId
-        });
+        logger.error(`Unexpected error in game start handler:`, err);
         
-        // Identify the player
-        analyticsService.identifyPlayer(data.playerAddress, {
-          first_seen: new Date().toISOString()
+        // Send error to client
+        socket.emit('server:error', {
+          message: 'Failed to start game: Server error'
         });
       }
-      
-      logger.info(`Game ${gameId} started for player ${playerAddress}`);
-      
-    } catch (error) {
-      logger.error(`Error starting game ${gameId}:`, error);
-      
-      // Still acknowledge the game start but with a different status
-      // This is better than letting the client time out
-      socket.emit('server:gameStart', {
-        status: 'started',
-        gameId,
-        timestamp: Date.now(),
-      });
-      
-      logger.warn(`Game ${gameId} started with warnings for player ${playerAddress}`);
-    }
-    
-  } catch (err) {
-    logger.error(`Unexpected error in game start handler:`, err);
-    
-    // Send error to client
-    socket.emit('server:error', {
-      message: 'Failed to start game: Server error'
     });
-  }
-});
     
     // Handle player jump
     socket.on('client:jump', async (data) => {
       try {
         const { gameId, playerAddress, height, score } = data;
+        const normalizedAddress = playerAddress.toLowerCase();
         const clientInfo = connectedClients.get(socket.id);
         
         // More permissive check
@@ -1069,8 +1062,8 @@ socket.on('client:gameStart', async (data) => {
         }
         
         // Update client info if needed
-        if (clientInfo.playerAddress !== playerAddress) {
-          clientInfo.playerAddress = playerAddress;
+        if (clientInfo.playerAddress !== normalizedAddress) {
+          clientInfo.playerAddress = normalizedAddress;
         }
         if (clientInfo.gameId !== gameId) {
           clientInfo.gameId = gameId;
@@ -1098,7 +1091,7 @@ socket.on('client:gameStart', async (data) => {
             `INSERT INTO dino_game_events 
              (game_id, player_address, event_type, event_data) 
              VALUES ($1, $2, $3, $4)`,
-            [gameId, playerAddress, 'jump', JSON.stringify({ height, score })]
+            [gameId, normalizedAddress, 'jump', JSON.stringify({ height, score })]
           );
         } finally {
           client.release();
@@ -1152,6 +1145,7 @@ socket.on('client:gameStart', async (data) => {
     socket.on('client:gameOver', async (data) => {
       try {
         const { gameId, playerAddress, finalScore, distance } = data;
+        const normalizedAddress = playerAddress.toLowerCase();
         const clientInfo = connectedClients.get(socket.id);
         
         // More permissive check
@@ -1167,7 +1161,7 @@ socket.on('client:gameStart', async (data) => {
         const gameDuration = gameStartTime ? Date.now() - gameStartTime : 0;
         
         // Update client info
-        clientInfo.playerAddress = playerAddress;
+        clientInfo.playerAddress = normalizedAddress;
         clientInfo.gameId = gameId;
         clientInfo.finalScore = finalScore;
         clientInfo.distance = distance;
@@ -1199,7 +1193,7 @@ socket.on('client:gameStart', async (data) => {
             const jumpsResult = await client.query(
               `SELECT COUNT(*) FROM dino_game_events 
                WHERE game_id = $1 AND player_address = $2 AND event_type = 'jump'`,
-              [gameId, playerAddress]
+              [gameId, normalizedAddress]
             );
             
             jumpsCount = parseInt(jumpsResult.rows[0].count) || 0;
@@ -1209,7 +1203,7 @@ socket.on('client:gameStart', async (data) => {
               `UPDATE dino_player_sessions 
                SET end_time = NOW(), final_score = $1, distance_traveled = $2, jumps_count = $3, completed = true 
                WHERE game_id = $4 AND player_address = $5`,
-              [finalScore, distance, jumpsCount, gameId, playerAddress]
+              [finalScore, distance, jumpsCount, gameId, normalizedAddress]
             );
             
             // 4. Record game over event
@@ -1217,7 +1211,7 @@ socket.on('client:gameStart', async (data) => {
               `INSERT INTO dino_game_events 
                (game_id, player_address, event_type, event_data) 
                VALUES ($1, $2, $3, $4)`,
-              [gameId, playerAddress, 'gameover', JSON.stringify({ 
+              [gameId, normalizedAddress, 'gameover', JSON.stringify({ 
                 finalScore, 
                 distance, 
                 duration: gameDuration 
@@ -1228,7 +1222,7 @@ socket.on('client:gameStart', async (data) => {
             const leaderboardResult = await client.query(
               `SELECT COUNT(*) FROM dino_leaderboard 
                WHERE score <= $1 AND player_address != $2`,
-              [finalScore, playerAddress]
+              [finalScore, normalizedAddress]
             );
             
             isHighScore = parseInt(leaderboardResult.rows[0].count) > 0;
@@ -1239,12 +1233,12 @@ socket.on('client:gameStart', async (data) => {
                 `INSERT INTO dino_leaderboard 
                  (player_address, score, game_id) 
                  VALUES ($1, $2, $3)`,
-                [playerAddress, finalScore, gameId]
+                [normalizedAddress, finalScore, gameId]
               );
               
               // Notify about high score
-              io?.to(`player:${playerAddress}`).emit('server:highScore', {
-                playerAddress,
+              io?.to(`player:${normalizedAddress}`).emit('server:highScore', {
+                playerAddress: normalizedAddress,
                 score: finalScore,
                 gameId
               });
@@ -1368,7 +1362,7 @@ socket.on('client:gameStart', async (data) => {
                 `UPDATE dino_player_sessions 
                  SET end_time = NOW(), completed = false 
                  WHERE game_id = $1 AND player_address = $2 AND end_time IS NULL`,
-                [clientInfo.gameId, clientInfo.playerAddress]
+                [clientInfo.gameId, clientInfo.playerAddress.toLowerCase()]
               );
             }
           } finally {
