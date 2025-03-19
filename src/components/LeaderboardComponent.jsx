@@ -33,37 +33,26 @@ const Leaderboard = () => {
         .select(`
           player_address,
           score,
-          dino_player_profiles!inner(username)
+          dino_player_profiles(username)
         `)
         .order('score', { ascending: false })
         .limit(10);
-      
+        
       if (error) throw error;
       
-      console.log("Leaderboard data:", leaderboardData);
-      if (!leaderboardData || !Array.isArray(leaderboardData)) {
-        throw new Error("Invalid data received from database");
-      }
-
-      // Process the leaderboard data
+      // Process the joined data
       const processedEntries = leaderboardData.map((entry, index) => ({
         rank: index + 1,
         player: entry.player_address,
         score: Number(entry.score),
-        displayName: entry.username || formatAddress(entry.player_address)
+        displayName: entry.dino_player_profiles?.username || formatAddress(entry.player_address)
       }));
-
+  
       setLeaderboard(processedEntries);
       setLoading(false);
     } catch (err) {
       console.error("Error fetching leaderboard:", err);
-      
-      if (err.message?.includes('network') || err.message?.includes('timeout')) {
-        setError("Network error. Please check your connection and try again.");
-      } else {
-        setError(`Failed to fetch leaderboard: ${err.message || "Unknown error"}`);
-      }
-      
+      setError(`Failed to fetch leaderboard: ${err.message}`);
       setLoading(false);
     }
   };

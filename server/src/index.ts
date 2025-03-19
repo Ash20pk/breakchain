@@ -2,7 +2,7 @@
 import express from 'express';
 import http from 'http';
 import { Server as SocketIOServer, Socket } from 'socket.io';
-import { Pool, PoolConfig } from 'pg';
+import { Pool, PoolConfig, PoolClient } from 'pg';
 import { createWalletClient, createPublicClient, http as viemHttp } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import dotenv from 'dotenv';
@@ -901,6 +901,51 @@ async function startProcessingQueueFromDB() {
   }, 1000); // Check every second
 }
 
+/**
+ * Check if a score qualifies for the leaderboard
+ * @param client Database client
+ * @param score Player's score
+ * @param playerAddress Player's wallet address
+ */
+async function isHighScoreForLeaderboard(
+  client: PoolClient, 
+  score: number, 
+  playerAddress: string
+): Promise<boolean> {
+  // First check total number of entries
+  const totalResult = await client.query('SELECT COUNT(*) FROM dino_leaderboard');
+  const totalEntries = parseInt(totalResult.rows[0].count.toString(), 10);
+  
+  // If fewer than 10 entries, it's automatically a high score
+  if (totalEntries < 10) {
+    return true;
+  }
+  
+  // Check if this player already has a better score
+  const playerBestResult = await client.query(
+    'SELECT MAX(score) as best FROM dino_leaderboard WHERE player_address = $1',
+    [playerAddress]
+  );
+  
+  const playerBest = playerBestResult.rows[0]?.best ? parseInt(playerBestResult.rows[0].best.toString(), 10) : 0;
+  
+  // If player's new score is better than their existing best, continue checking
+  if (score > playerBest) {
+    // Find the lowest score in the top 10
+    const lowestResult = await client.query(
+      'SELECT MIN(score) as min_score FROM (SELECT score FROM dino_leaderboard ORDER BY score DESC LIMIT 10) AS top_scores'
+    );
+    
+    const lowestTopScore = lowestResult.rows[0]?.min_score ? 
+      parseInt(lowestResult.rows[0].min_score.toString(), 10) : 0;
+    
+    // It's a high score if it beats the lowest score in the top 10
+    return score > lowestTopScore;
+  }
+  
+  return false;
+}
+
 // Create blockchain manager
 const blockchainManager = new BlockchainManager(CONTRACT_ADDRESS, DinoRunnerABI);
 
@@ -1427,8 +1472,9 @@ if (cluster.isPrimary) {
 
             logger.info(`Leaderboard check for ${normalizedAddress}: ${leaderboardResult.rows[0].count}`);
             
-            isHighScore = parseInt(leaderboardResult.rows[0].count) > 0;
-            
+            const numericScore = typeof finalScore === 'string' ? parseInt(finalScore, 10) : finalScore;
+            isHighScore = await isHighScoreForLeaderboard(client, numericScore, normalizedAddress);
+                        
             if (isHighScore) {
               // 6. Add to leaderboard if high score
               await client.query(

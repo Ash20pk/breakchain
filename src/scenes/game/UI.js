@@ -3,8 +3,6 @@ import ScoreZone from '../../prefabs/ui/score/ScoreZone';
 import CurrentScorePanel from '../../prefabs/ui/score/CurrentScorePanel';
 import HighScorePanel from '../../prefabs/ui/score/HighScorePanel';
 import GameOverPanel from '../../prefabs/ui/gameover/GameOverPanel';
-import BlockchainEffects from '../../prefabs/ui/blockchain/BlockchainEffects';
-import BlockchainStatus from '../../prefabs/ui/blockchain/BlockchainStatus';
 import CONFIG from '../../config/game';
 
 /**
@@ -25,10 +23,6 @@ class UI {
     this.currentScorePanel = new CurrentScorePanel(scene);
     this.highScorePanel = new HighScorePanel(scene);
     this.scoreZone = new ScoreZone(this.currentScorePanel, this.highScorePanel);
-    
-    // Blockchain UI components
-    this.blockchainStatus = new BlockchainStatus(scene);
-    this.blockchainEffects = new BlockchainEffects(scene);
     
     // Register event handlers
     this.scene.events.on(CONFIG.EVENTS.GAME_START, this.onGameStart, this);
