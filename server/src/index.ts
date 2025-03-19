@@ -9,7 +9,7 @@ import dotenv from 'dotenv';
 import { SomniaChain } from './chains';
 import { DinoRunnerABI } from './abi';
 import { createClient } from 'redis';
-import winston from 'winston';
+import winston, { Logger } from 'winston';
 import os from 'os';
 import cluster from 'cluster';
 import { initAnalytics, getAnalytics } from './analytics';
@@ -226,10 +226,12 @@ class BlockchainManager {
   private processingIntervals: NodeJS.Timeout[] = [];
   private pendingNonces: Map<number, bigint> = new Map();
   private isInitialized: boolean = false;
+  private logger: Logger;
 
   constructor(contractAddress: string, abi: any[]) {
     this.contractAddress = contractAddress;
     this.abi = abi;
+    this.logger = logger;
   }
 
   async initialize() {
@@ -323,6 +325,64 @@ class BlockchainManager {
 
   getWalletStatus(): WalletStatus[] {
     return [...this.walletStatus];
+  }
+
+  /**
+   * Start watching for transaction confirmations
+   * @param {Function} onConfirmation - Callback for confirmed transactions
+   */
+  startTransactionWatcher(onConfirmation: (tx: any, status: 'confirmed' | 'failed', receipt: any) => void) {
+    if (!this.publicClient) {
+      this.logger.warn('Cannot start transaction watcher: public client not initialized');
+      return;
+    }
+
+    this.publicClient.watchBlocks({
+      onBlock: async (blockNumber: bigint) => {
+        try {
+          // Get pending transactions from DB
+          const client = await pool.connect();
+          try {
+            const pendingTxs = await client.query(
+              "SELECT * FROM dino_transaction_queue WHERE status = 'sent' AND hash IS NOT NULL LIMIT 100"
+            );
+            
+            // Check each transaction for confirmation
+            for (const tx of pendingTxs.rows) {
+              try {
+                const receipt = await this.publicClient.getTransactionReceipt({
+                  hash: tx.hash as `0x${string}`
+                });
+                
+                if (receipt) {
+                  // Transaction is confirmed
+                  const status = receipt.status === 'success' ? 'confirmed' : 'failed';
+                  
+                  // Update transaction status in DB
+                  await client.query(
+                    "UPDATE dino_transaction_queue SET status = $1 WHERE id = $2",
+                    [status, tx.id]
+                  );
+                  
+                  // Call the confirmation callback
+                  onConfirmation(tx, status, receipt);
+                  
+                  this.logger.info(`Transaction ${tx.hash} confirmed with status ${status}`);
+                }
+              } catch (txError) {
+                this.logger.error(`Error checking transaction ${tx.hash}:`, txError);
+              }
+            }
+          } finally {
+            client.release();
+          }
+        } catch (error) {
+          this.logger.error("Error in transaction watcher:", error);
+        }
+      }
+    });
+    
+    this.logger.info("Transaction confirmation watcher started");
   }
 
   resetWallet(index: number) {
@@ -637,15 +697,17 @@ if (cluster.isPrimary) {
   
 
 // WebSocket event handlers
-  io!.on('connection', async (socket: ClientSocket) => {
+  io.on('connection', async (socket: ClientSocket) => {
     logger.info(`Client connected: ${socket.id}`);
+
+    const sessionStartTime = Date.now();
     
     // Add to connected clients map
     connectedClients.set(socket.id, {
       id: socket.id,
       playerAddress: null,
       gameId: null,
-      connectedAt: Date.now()
+      connectedAt: sessionStartTime
     });
     
     // Send initial status
@@ -686,6 +748,12 @@ if (cluster.isPrimary) {
           
           // Join player-specific room
           socket.join(`player:${playerAddress}`);
+
+          // THEN track analytics AFTER DB operation is complete
+          if (analyticsService) {
+            analyticsService.identifyPlayer(playerAddress);
+            analyticsService.trackSessionStart(playerAddress, socket.id);
+          }
           
           // Acknowledge successful auth
           socket.emit('server:auth', {
@@ -837,7 +905,7 @@ socket.on('client:gameStart', async (data) => {
       } finally {
         if (client) client.release();
       }
-    })();
+    });
     
     // Add timeout to database operations
     const timeoutPromise = new Promise((_, reject) => {
@@ -856,11 +924,11 @@ socket.on('client:gameStart', async (data) => {
         timestamp: Date.now()
       });
 
-      // Track game start in PostHog
+      // THEN track in analytics AFTER DB operations (even if they failed)
       if (analyticsService) {
         analyticsService.trackGameStart({
-          playerAddress: data.playerAddress,
-          gameId: data.gameId
+          playerAddress,
+          gameId
         });
         
         // Identify the player
@@ -1192,6 +1260,29 @@ socket.on('client:gameStart', async (data) => {
   
   // Broadcast wallet status every 5 seconds
   setInterval(broadcastWalletStatus, 5000);
+
+  // Initialize the transaction watcher with a callback
+  blockchainManager.startTransactionWatcher((tx, status, receipt) => {
+    // Track confirmation in analytics
+    if (analyticsService) {
+      analyticsService.trackTransactionConfirmation(tx.hash, status, {
+        ...tx,
+        blockNumber: receipt.blockNumber
+      });
+    }
+    
+    // Broadcast confirmation
+    broadcastTransactionUpdate({
+      id: tx.id,
+      player_address: tx.player_address,
+      game_id: tx.game_id,
+      type: tx.type,
+      status,
+      hash: tx.hash,
+      score: tx.score,
+      blockNumber: receipt.blockNumber
+    });
+  });
 
   // Ensure proper shutdown
   process.on('SIGTERM', async () => {

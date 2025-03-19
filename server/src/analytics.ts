@@ -5,6 +5,12 @@ import { Logger } from 'winston';
 
 dotenv.config();
 
+// Configurable constants
+const BUFFER_WINDOW_MS = parseInt(process.env.ANALYTICS_BUFFER_WINDOW_MS || '60000');
+const TPS_CALC_INTERVAL = parseInt(process.env.ANALYTICS_TPS_INTERVAL_MS || '10000');
+const POSTHOG_FLUSH_AT = parseInt(process.env.POSTHOG_FLUSH_AT || '20');
+const POSTHOG_FLUSH_INTERVAL = parseInt(process.env.POSTHOG_FLUSH_INTERVAL || '10000');
+
 /**
  * Analytics service for tracking blockchain metrics using PostHog
  */
@@ -21,7 +27,7 @@ export class AnalyticsService {
     this.initPostHog();
     
     // Calculate TPS every 10 seconds and send to PostHog
-    this.intervalId = setInterval(() => this.calculateAndSendTps(), 10000);
+    this.intervalId = setInterval(() => this.calculateAndSendTps(), TPS_CALC_INTERVAL);
   }
 
   /**
@@ -37,8 +43,13 @@ export class AnalyticsService {
     }
     
     try {
-      this.posthog = new PostHog(apiKey, { host });
-      this.logger.info('PostHog analytics initialized successfully');
+      // Initialize with custom batching settings
+      this.posthog = new PostHog(apiKey, { 
+        host,
+        flushAt: POSTHOG_FLUSH_AT, 
+        flushInterval: POSTHOG_FLUSH_INTERVAL
+      });
+      this.logger.info(`PostHog analytics initialized with flushAt=${POSTHOG_FLUSH_AT}, flushInterval=${POSTHOG_FLUSH_INTERVAL}ms`);
     } catch (error) {
       this.logger.error('Failed to initialize PostHog:', error);
     }
@@ -54,7 +65,8 @@ export class AnalyticsService {
     // Add to transaction buffer for TPS calculation
     this.transactionBuffer.push({
       ...txData,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      submissionTime: Date.now() // Track when tx was submitted for confirmation timing
     });
     
     // Track in PostHog with all relevant properties
@@ -80,10 +92,54 @@ export class AnalyticsService {
         event: 'game_completed',
         properties: {
           score: txData.score,
-          game_id: txData.game_id
+          game_id: txData.game_id,
+          timestamp: Date.now()
         }
       });
     }
+  }
+
+  /**
+   * Track transaction confirmation on blockchain
+   */
+  trackTransactionConfirmation(txHash: string, status: 'confirmed' | 'failed', data: any) {
+    if (!this.posthog) return;
+    
+    this.posthog.capture({
+      distinctId: data.player_address || 'anonymous',
+      event: `blockchain_tx_${status}`,
+      properties: {
+        txHash: txHash,
+        type: data.type,
+        gameId: data.game_id,
+        confirmationTime: Date.now(),
+        blockNumber: data.blockNumber || 0,
+        confirmationDuration: data.submissionTime ? Date.now() - data.submissionTime : null,
+        score: data.score
+      }
+    });
+  }
+
+  /**
+   * Track complete game session with rich metadata
+   */
+  trackGameCompletion(gameData: any) {
+    if (!this.posthog) return;
+    
+    this.posthog.capture({
+      distinctId: gameData.playerAddress || 'anonymous',
+      event: 'game_completed_full',
+      properties: {
+        gameId: gameData.gameId,
+        finalScore: gameData.finalScore,
+        distance: gameData.distance,
+        duration: gameData.duration || 0,
+        jumpsCount: gameData.jumpsCount || 0,
+        isHighScore: gameData.isHighScore || false,
+        timestamp: Date.now(),
+        date: new Date().toISOString()
+      }
+    });
   }
 
   /**
@@ -117,7 +173,7 @@ export class AnalyticsService {
     
     // Clean up old transactions from buffer (keep last 60 seconds)
     this.transactionBuffer = this.transactionBuffer.filter(
-      tx => tx.timestamp > now - 60000
+      tx => tx.timestamp > now - BUFFER_WINDOW_MS
     );
     
     // Log current stats
@@ -141,6 +197,60 @@ export class AnalyticsService {
   }
   
   /**
+   * Track session start (for player engagement metrics)
+   */
+  trackSessionStart(playerAddress: string, sessionId: string, clientInfo: any = {}) {
+    if (!this.posthog) return;
+    
+    this.posthog.capture({
+      distinctId: playerAddress || 'anonymous',
+      event: 'session_started',
+      properties: {
+        sessionId: sessionId,
+        startTime: Date.now(),
+        deviceInfo: clientInfo,
+        timestamp: Date.now()
+      }
+    });
+  }
+  
+  /**
+   * Track session end (for player engagement metrics)
+   */
+  trackSessionEnd(playerAddress: string, sessionId: string, duration: number) {
+    if (!this.posthog) return;
+    
+    this.posthog.capture({
+      distinctId: playerAddress || 'anonymous',
+      event: 'session_ended',
+      properties: {
+        sessionId: sessionId,
+        duration: duration,
+        endTime: Date.now(),
+        timestamp: Date.now()
+      }
+    });
+  }
+  
+  /**
+   * Track client-side events (browser/frontend events)
+   */
+  trackClientEvent(eventName: string, data: any) {
+    if (!this.posthog) return;
+    
+    this.posthog.capture({
+      distinctId: data.playerAddress || 'anonymous',
+      event: eventName,
+      properties: {
+        ...data.properties,
+        clientTimestamp: data.timestamp || Date.now(),
+        serverTimestamp: Date.now(),
+        sessionId: data.sessionId
+      }
+    });
+  }
+  
+  /**
    * Track player identification
    */
   identifyPlayer(address: string, properties: any = {}) {
@@ -158,6 +268,15 @@ export class AnalyticsService {
   }
   
   /**
+   * Force an immediate flush of queued events
+   */
+  flush() {
+    if (this.posthog) {
+      this.posthog.flush();
+    }
+  }
+  
+  /**
    * Flush all metrics to PostHog and shutdown
    */
   async shutdown() {
@@ -168,6 +287,7 @@ export class AnalyticsService {
     
     if (this.posthog) {
       try {
+        // Make sure to wait for shutdown to complete
         await this.posthog.shutdown();
         this.logger.info('PostHog analytics flushed and shut down');
       } catch (error) {
