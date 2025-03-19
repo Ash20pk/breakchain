@@ -91,12 +91,6 @@ const createDbPool = () => {
     })
     .catch(err => {
       logger.error('Initial database connection test failed:', err);
-      
-      if (DEV_MODE) {
-        logger.warn('Running in DEV_MODE: will continue despite database issues');
-      } else {
-        logger.warn('Database issues may affect server functionality');
-      }
     });
   
   return pool;
@@ -107,7 +101,8 @@ const pool = createDbPool();
 
 // Define Socket.IO event types
 interface ClientToServerEvents {
-  'client:auth': (data: { playerAddress: string; signature: string }) => void;
+  'client:auth': (data: { playerAddress: string; signature: string, username: string }) => void;
+  'client:checkUsername': (data: { playerAddress: string }) => void;
   'client:gameStart': (data: { playerAddress: string; gameId: string }) => void;
   'client:jump': (data: { gameId: string; playerAddress: string; height: number; score: number }) => void;
   'client:gameOver': (data: { gameId: string; playerAddress: string; finalScore: number; distance: number }) => void;
@@ -119,6 +114,7 @@ interface ClientToServerEvents {
 interface ServerToClientEvents {
   'server:status': (data: { status: string; timestamp: number; pendingTransactions: number; walletStatus: WalletStatus[] }) => void;
   'server:auth': (data: { status: string; playerAddress?: string; message?: string }) => void;
+  'server:usernameCheck': (data: { username: string | null; error?: boolean }) => void;
   'server:gameStart': (data: { status: string; gameId: string; timestamp: number }) => void;
   'server:jump': (data: { status: string; txId: number; gameId: string; timestamp: number }) => void;
   'server:gameOver': (data: { status: string; txId: number; gameId: string; finalScore: number; isHighScore: boolean; timestamp: number }) => void;
@@ -785,7 +781,7 @@ if (cluster.isPrimary) {
     // Handle client authentication
     socket.on('client:auth', async (data) => {
       try {
-        const { playerAddress, signature } = data;
+        const { playerAddress, signature, username } = data;
         
         // In a real app, verify the signature here
         // This is simplified for the example
@@ -806,6 +802,29 @@ if (cluster.isPrimary) {
               'INSERT INTO dino_websocket_sessions (session_id, player_address, status) VALUES ($1, $2, $3)',
               [socket.id, playerAddress, 'active']
             );
+            
+            // Check if player already exists in profiles table
+            const profileResult = await client.query(
+              'SELECT * FROM dino_player_profiles WHERE player_address = $1',
+              [playerAddress]
+            );
+            
+            // If player doesn't exist, create a new profile
+            if (profileResult.rows.length === 0) {
+              logger.info(`Creating new player profile for ${playerAddress}`);
+              await client.query(
+                'INSERT INTO dino_player_profiles (player_address, username, first_played_at, last_played_at) VALUES ($1, $2, NOW(), NOW())',
+                [playerAddress, username]
+              );
+            } 
+            // If player exists and username is provided, update their username
+            else if (username) {
+              logger.info(`Updating username for ${playerAddress} to ${username}`);
+              await client.query(
+                'UPDATE dino_player_profiles SET username = $1, last_played_at = NOW() WHERE player_address = $2',
+                [username, playerAddress]
+              );
+            }
           } finally {
             client.release();
           }
@@ -838,6 +857,29 @@ if (cluster.isPrimary) {
           status: 'error',
           message: 'Authentication failed'
         });
+      }
+    });
+
+    socket.on('client:checkUsername', async (data) => {
+      try {
+        const client = await pool.connect();
+        try {
+          const result = await client.query(
+            'SELECT username FROM dino_player_profiles WHERE player_address = $1',
+            [data.playerAddress]
+          );
+          
+          const username = result.rows.length > 0 ? result.rows[0].username : null;
+          
+          socket.emit('server:usernameCheck', {
+            username
+          });
+        } finally {
+          client.release();
+        }
+      } catch (error) {
+        logger.error('Error checking username:', error);
+        socket.emit('server:usernameCheck', { username: null, error: true });
       }
     });
     
@@ -877,21 +919,6 @@ socket.on('client:gameStart', async (data) => {
     // Join game-specific room
     socket.join(`game:${gameId}`);
     socket.join(`player:${playerAddress}`); // Also join the player-specific room
-    
-    // If in DEV mode, skip database operations
-    if (DEV_MODE) {
-      logger.info(`[DEV MODE] Skipping database operations for game ${gameId}`);
-      
-      // Send immediate success response
-      socket.emit('server:gameStart', {
-        status: 'started',
-        gameId,
-        timestamp: Date.now()
-      });
-      
-      logger.info(`[DEV MODE] Game ${gameId} started for player ${playerAddress}`);
-      return;
-    }
     
     // Database operations with timeout protection
     const dbOperationsPromise = (async () => {

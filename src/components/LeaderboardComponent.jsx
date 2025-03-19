@@ -1,15 +1,22 @@
-// src/components/LeaderboardComponent.jsx - Optimized for mobile
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { createPublicClient, http } from 'viem';
 import { SomniaChain } from '../utils/chain';
 import { DinoRunnerABI } from './abi/DinoRunnerABI';
 import './Leaderboard.css';
+import BlockchainSync, { initialize as initializeBlockchain } from '../hooks/BlockchainSync';
 
 const Leaderboard = () => {
   const [leaderboard, setLeaderboard] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [retryCount, setRetryCount] = useState(0);
+  const [usernames, setUsernames] = useState({});
+
+  // Move formatAddress before its first use
+  const formatAddress = useCallback((address) => {
+    if (!address) return "";
+    return `${address.slice(0, 6)}...${address.slice(-4)}`;
+  }, []);
   
   const client = useMemo(() => createPublicClient({
     chain: SomniaChain,
@@ -20,12 +27,21 @@ const Leaderboard = () => {
     })
   }), []);
 
-  const contractAddress = import.meta.env.VITE_CONTRACT_ADDRESS;
-
-  const formatAddress = useCallback((address) => {
-    if (!address) return "";
-    return `${address.slice(0, 6)}...${address.slice(-4)}`;
+  // Initialize blockchain connection
+  useEffect(() => {
+    console.log("Initializing blockchain connection...");
+    BlockchainSync.initialize();
   }, []);
+
+  const processedLeaderboard = useMemo(() => {
+    return leaderboard.map(entry => ({
+      ...entry,
+      displayName: usernames[entry.player] || formatAddress(entry.player)
+    }));
+  }, [leaderboard, usernames, formatAddress]);
+
+  // Rest of the component remains the same...
+  const contractAddress = import.meta.env.VITE_CONTRACT_ADDRESS;
 
   const formatDate = useCallback((timestamp) => {
     try {
@@ -52,6 +68,32 @@ const Leaderboard = () => {
            ('ontouchstart' in window) || 
            (navigator.maxTouchPoints > 0);
   }, []);
+
+  const getUsername = async (address) => {
+    const result = await BlockchainSync.checkUsername(address);
+    console.log("Username for", address, "is", result.username);
+    return result.username;
+  };
+
+  useEffect(() => {
+    const fetchUsernames = async () => {
+      const usernamePromises = leaderboard.map(async (entry) => {
+        const username = await getUsername(entry.player);
+        return { address: entry.player, username };
+      });
+
+      const usernameResults = await Promise.all(usernamePromises);
+      
+      const usernameMap = usernameResults.reduce((acc, result) => {
+        acc[result.address] = result.username;
+        return acc;
+      }, {});
+
+      setUsernames(usernameMap);
+    };
+
+    fetchUsernames();
+  }, [leaderboard]);
 
   useEffect(() => {
     const fetchLeaderboard = async () => {
@@ -116,6 +158,7 @@ const Leaderboard = () => {
     fetchLeaderboard();
   }, [client, contractAddress, retryCount, formatDate]);
 
+  // Render methods remain the same...
   if (loading) {
     return (
       <div className="blockchain-leaderboard">
@@ -173,10 +216,13 @@ const Leaderboard = () => {
             </tr>
           </thead>
           <tbody>
-            {leaderboard.map((entry) => (
-              <tr key={`${entry.player}-${entry.score}`} className={entry.rank <= 3 ? `rank-${entry.rank}` : ''}>
+            {processedLeaderboard.map((entry) => (
+              <tr 
+                key={`${entry.player}-${entry.score}`} 
+                className={entry.rank <= 3 ? `rank-${entry.rank}` : ''}
+              >
                 <td>{entry.rank}</td>
-                <td className="player-address">{formatAddress(entry.player)}</td>
+                <td className="player-address">{entry.displayName}</td>
                 <td>{entry.score.toLocaleString()}</td>
               </tr>
             ))}

@@ -133,6 +133,7 @@ html {
   color: var(--primary-color);
   text-align: center;
   margin: var(--spacing-small) 0;
+  margin-top: var(--spacing-large);
 }
 
 .wallet-connector .status-message {

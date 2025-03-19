@@ -7,6 +7,8 @@ import './App.css';
 import Game from './Game';
 import config from './config';
 import Leaderboard from './components/LeaderboardComponent';
+import BlockchainSync, { initialize as initializeBlockchain } from './hooks/BlockchainSync';
+import NamePromptModal from './components/NamePromptModal'; 
 
 function App() {
   const [gameStarted, setGameStarted] = useState(false);
@@ -15,9 +17,63 @@ function App() {
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [introProgress, setIntroProgress] = useState(0);
+  const [showNamePrompt, setShowNamePrompt] = useState(false);
+  const [ name, setName ] = useState('');
+  const [blockchainInitialized, setBlockchainInitialized] = useState(false);
   
   const gameContainerRef = useRef(null);
   const { address, isConnected } = useAccount();
+
+  // Initialize blockchain connection
+  useEffect(() => {
+    const initialize = async () => {
+      console.log("Initializing blockchain connection...");
+      await BlockchainSync.initialize();  
+      setBlockchainInitialized(true);
+    };
+    initialize();
+  }, []);
+  
+  useEffect(() => {
+    const checkUsername = async () => {
+      if (isConnected && address && blockchainInitialized) {
+        try {
+          const result = await BlockchainSync.checkUsername(address);
+          
+          if (!result.username) {
+            setShowNamePrompt(true);
+          } else {
+            setName(result.username);
+          }
+        } catch (error) {
+          console.error('Error checking username:', error);
+        }
+      }
+    };
+  
+    checkUsername();
+  }, [isConnected, address]);
+
+  const handleSaveName = async (name) => {
+    try {
+      if (!blockchainInitialized) {
+        return;
+      }
+      // Send authentication with username
+      BlockchainSync.authenticateUser(address, name, (result) => {
+        if (result.success) {
+          setShowNamePrompt(false);
+          toast.success('Username saved successfully');
+        } else {
+          console.error('Authentication failed:', result.message);
+          toast.error('Failed to save username: ' + result.message);
+        }
+      });
+    } catch (error) {
+      console.error('Error saving username:', error);
+      toast.error('Failed to save username');
+    }
+  };
 
   // Check if we're on a mobile device
   useEffect(() => {
@@ -193,6 +249,12 @@ function App() {
           }
         }}
       />
+
+      <NamePromptModal 
+        isOpen={showNamePrompt}
+        onSave={handleSaveName}
+        onClose={() => setShowNamePrompt(false)}
+      />
       
       <div className="game-title">
         <h1>DINO RUNNER</h1>
@@ -213,7 +275,7 @@ function App() {
         <>
           <div className="wallet-connector">
             <h2 className="title">
-              {isConnected ? 'WALLET CONNECTED!' : 'CONNECT YOUR WALLET'}
+              {isConnected ? name ? 'WELCOME ' + name.toUpperCase() + '!' : 'WALLET CONNECTED' : ''}
             </h2>
             
             <div className={`status-message ${isConnected ? 'connected' : 'disconnected'}`}>
@@ -283,7 +345,7 @@ function App() {
       )}
       
       <footer>
-        <p>© 2025 Dino Runner | ON-CHAIN EDITION | Powered by Somnia Network</p>
+        <p> 2025 Dino Runner | ON-CHAIN EDITION | Powered by Somnia Network</p>
       </footer>
     </div>
   );

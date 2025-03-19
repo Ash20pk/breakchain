@@ -20,7 +20,9 @@ let state = {
   walletStatus: [],
   leaderboard: [],
   gameActive: false,
-  gameId: null
+  gameId: null,
+  playerAddress: null,
+  authenticated: false
 };
 let listeners = [];
 
@@ -225,7 +227,9 @@ function createAPI() {
     getLeaderboard,
     reconnect,
     disconnect,
-    isConnected: () => socket && socket.connected
+    isConnected: () => socket && socket.connected,
+    authenticateUser,
+    checkUsername
   };
 }
 
@@ -484,6 +488,103 @@ export function disconnect() {
   }
 }
 
+export function checkUsername(playerAddress) {
+  return new Promise((resolve, reject) => {
+    if (!socket || !socket.connected) {
+      reject(new Error('Socket not connected'));
+      return;
+    }
+
+    socket.emit('client:checkUsername', { playerAddress });
+    
+    socket.once('server:usernameCheck', (response) => {
+      resolve(response);
+    });
+
+    setTimeout(() => reject(new Error('Username check timed out')), 5000);
+  });
+}
+
+// Authenticate user with their wallet address
+export function authenticateUser(playerAddress, username, callback) {
+  if (!socket) {
+    console.error('BlockchainSync: Cannot authenticate - no socket');
+    if (callback) callback({ success: false, message: 'No socket connection' });
+    return false;
+  }
+  
+  if (!socket.connected) {
+    console.error('BlockchainSync: Cannot authenticate - socket not connected');
+    if (callback) callback({ success: false, message: 'Socket not connected' });
+    return false;
+  }
+  
+  if (!playerAddress) {
+    console.error('BlockchainSync: Cannot authenticate - no player address');
+    if (callback) callback({ success: false, message: 'No player address provided' });
+    return false;
+  }
+  
+  console.log(`BlockchainSync: Authenticating user with address ${playerAddress}`);
+  
+  // Set up one-time listener for auth response
+  socket.once('server:auth', (response) => {
+    console.log('BlockchainSync: Received authentication response:', response);
+    
+    if (response.status === 'authenticated') {
+      console.log(`BlockchainSync: User ${playerAddress} authenticated successfully`);
+      
+      // Update state if needed
+      updateState({
+        ...state,
+        playerAddress: playerAddress,
+        authenticated: true
+      });
+      
+      // Show success toast
+      toast.success('Wallet Connected', {
+        description: 'Your wallet is now connected to the game'
+      });
+      
+      if (callback) callback({ success: true, playerAddress });
+    } else {
+      console.error(`BlockchainSync: Authentication failed:`, response.message);
+      
+      // Show error toast
+      toast.error('Authentication Failed', {
+        description: response.message || 'Could not connect wallet'
+      });
+      
+      if (callback) callback({ success: false, message: response.message });
+    }
+  });
+  
+  // Set timeout for auth response
+  const authTimeout = setTimeout(() => {
+    socket.off('server:auth'); // Remove the listener to prevent memory leaks
+    console.error('BlockchainSync: Authentication timeout after 5 seconds');
+    
+    toast.error('Authentication Timeout', {
+      description: 'Server did not respond in time'
+    });
+    
+    if (callback) callback({ success: false, message: 'Authentication timeout' });
+  }, 5000);
+  
+  // Send auth request
+  socket.emit('client:auth', { 
+    playerAddress: playerAddress,
+    username: username
+  });
+  
+  // Clear timeout when response is received
+  socket.once('server:auth', () => {
+    clearTimeout(authTimeout);
+  });
+  
+  return true;
+}
+
 // Export the module functions
 export default {
   initialize,
@@ -495,5 +596,7 @@ export default {
   disconnect,
   subscribe,
   getState: () => state,
-  isConnected: () => socket && socket.connected
+  isConnected: () => socket && socket.connected,
+  authenticateUser,
+  checkUsername
 };
