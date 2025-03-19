@@ -7,6 +7,6 @@
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "authorize-wallets.ts"],
   "exclude": ["node_modules"]
 }

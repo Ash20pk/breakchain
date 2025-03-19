@@ -215,6 +215,7 @@ type WalletStatus = {
   lastProcessedTime?: number;
   totalProcessed: number;
   consecutiveErrors: number;
+  queueLength?: number;
 };
 
 class BlockchainManager {
@@ -224,14 +225,16 @@ class BlockchainManager {
   private abi: any[];
   private walletStatus: WalletStatus[] = [];
   private processingIntervals: NodeJS.Timeout[] = [];
-  private pendingNonces: Map<number, bigint> = new Map();
+  private walletNonces: Map<number, bigint> = new Map(); // Track nonces per wallet
+  private walletQueues: Map<number, any[]> = new Map(); // Queue per wallet
+  private queueProcessingInterval: NodeJS.Timeout | null = null;
+  private readonly QUEUE_PROCESS_INTERVAL = 200; // ms between processing attempts
+  private readonly TRANSACTION_DELAY = 100; // ms between transactions for same wallet
   private isInitialized: boolean = false;
-  private logger: Logger;
 
   constructor(contractAddress: string, abi: any[]) {
     this.contractAddress = contractAddress;
     this.abi = abi;
-    this.logger = logger;
   }
 
   async initialize() {
@@ -257,6 +260,8 @@ class BlockchainManager {
         chain: SomniaChain,
         transport: viemHttp(rpcUrl, {
           timeout: 30000,
+          retryCount: 3,
+          retryDelay: 1000,
         })
       });
       
@@ -269,6 +274,8 @@ class BlockchainManager {
             chain: SomniaChain,
             transport: viemHttp(rpcUrl, {
               timeout: 30000,
+              retryCount: 3,
+              retryDelay: 1000,
             })
           });
           
@@ -278,8 +285,18 @@ class BlockchainManager {
             address: account.address,
             isProcessing: false,
             totalProcessed: 0,
-            consecutiveErrors: 0
+            consecutiveErrors: 0,
+            queueLength: 0
           });
+
+          // Initialize empty queue for this wallet
+          this.walletQueues.set(i, []);
+          
+          // Initialize nonce from blockchain
+          const nonce = await this.publicClient.getTransactionCount({
+            address: account.address
+          });
+          this.walletNonces.set(i, nonce);
           
           logger.info(`Wallet ${i} initialized with address ${account.address}`);
         } catch (error) {
@@ -291,7 +308,9 @@ class BlockchainManager {
       logger.info(`Blockchain manager initialized with ${this.walletClients.length} wallets`);
       
       // Start processing for each wallet
-      this.startProcessing();
+      // Start queue processing
+      this.startQueueProcessing();
+
       
     } catch (error) {
       logger.error('Blockchain manager initialization error:', error);
@@ -299,32 +318,306 @@ class BlockchainManager {
     }
   }
 
-  startProcessing() {
-    // Start transaction processing for each wallet
-    for (let i = 0; i < this.walletClients.length; i++) {
-      // Stagger wallet processing to avoid contention
-      const interval = 200 + (i * 50);
-      
-      this.processingIntervals[i] = setInterval(
-        () => this.processTransactionBatch(i),
-        interval
-      );
-      
-      logger.info(`Started processing for wallet ${i} with interval ${interval}ms`);
+    // Start queue processing for all wallets
+    startQueueProcessing() {
+      this.queueProcessingInterval = setInterval(() => {
+        for (let i = 0; i < this.walletClients.length; i++) {
+          this.processWalletQueue(i);
+        }
+      }, this.QUEUE_PROCESS_INTERVAL);
+      logger.info('Started transaction queue processing');
     }
+
+  // Stop queue processing
+  stopQueueProcessing() {
+    if (this.queueProcessingInterval) {
+      clearInterval(this.queueProcessingInterval);
+      this.queueProcessingInterval = null;
+    }
+    logger.info('Stopped transaction queue processing');
   }
 
-  stopProcessing() {
-    for (let i = 0; i < this.processingIntervals.length; i++) {
-      if (this.processingIntervals[i]) {
-        clearInterval(this.processingIntervals[i]);
+  // Get wallet status
+  getWalletStatus(): WalletStatus[] {
+    // Update queue lengths
+    for (let i = 0; i < this.walletStatus.length; i++) {
+      const queue = this.walletQueues.get(i) || [];
+      this.walletStatus[i].queueLength = queue.length;
+    }
+    return [...this.walletStatus];
+  }
+
+  // Queue a transaction to the best available wallet
+  queueTransaction(tx: any) {
+    const walletIndex = this.selectBestWallet();
+    
+    if (walletIndex === -1) {
+      logger.error('No available wallets to process transaction');
+      return false;
+    }
+    
+    // Add to wallet's queue
+    const queue = this.walletQueues.get(walletIndex) || [];
+    queue.push({
+      ...tx,
+      queuedAt: Date.now()
+    });
+    this.walletQueues.set(walletIndex, queue);
+    
+    logger.debug(`Transaction added to wallet ${walletIndex} queue, length: ${queue.length}`);
+    
+    // Update wallet status
+    this.walletStatus[walletIndex].queueLength = queue.length;
+    
+    return walletIndex;
+  }
+
+  // Select best wallet for a new transaction
+  selectBestWallet() {
+    // If all wallets have errors, return -1
+    if (this.walletStatus.every(w => w.consecutiveErrors >= 5)) {
+      return -1;
+    }
+    
+    // Find the wallet with the shortest queue that doesn't have too many errors
+    let minQueueLength = Number.MAX_SAFE_INTEGER;
+    let selectedWalletIndex = -1;
+    
+    for (let i = 0; i < this.walletClients.length; i++) {
+      // Skip wallets with too many consecutive errors
+      if (this.walletStatus[i].consecutiveErrors >= 5) {
+        continue;
+      }
+      
+      const queue = this.walletQueues.get(i) || [];
+      
+      // Prefer wallets that aren't currently processing
+      if (!this.walletStatus[i].isProcessing && queue.length < minQueueLength) {
+        minQueueLength = queue.length;
+        selectedWalletIndex = i;
       }
     }
-    logger.info('Stopped all transaction processing');
+    
+    // If all wallets are processing, just pick the one with shortest queue
+    if (selectedWalletIndex === -1) {
+      for (let i = 0; i < this.walletClients.length; i++) {
+        // Skip wallets with too many consecutive errors
+        if (this.walletStatus[i].consecutiveErrors >= 5) {
+          continue;
+        }
+        
+        const queue = this.walletQueues.get(i) || [];
+        if (queue.length < minQueueLength) {
+          minQueueLength = queue.length;
+          selectedWalletIndex = i;
+        }
+      }
+    }
+    
+    return selectedWalletIndex;
   }
 
-  getWalletStatus(): WalletStatus[] {
-    return [...this.walletStatus];
+  // Process the transaction queue for a specific wallet
+  async processWalletQueue(walletIndex: number) {
+    // Skip if this wallet is already processing or has too many errors
+    if (
+      !this.walletClients[walletIndex] || 
+      this.walletStatus[walletIndex].isProcessing ||
+      this.walletStatus[walletIndex].consecutiveErrors >= 5
+    ) {
+      return;
+    }
+    
+    const queue = this.walletQueues.get(walletIndex) || [];
+    if (queue.length === 0) {
+      return; // Nothing to process
+    }
+    
+    // Mark wallet as processing
+    this.walletStatus[walletIndex].isProcessing = true;
+    
+    try {
+      // Process one transaction at a time
+      const tx = queue[0]; // Get the next transaction without removing it yet
+      
+      // Get the current nonce for this wallet
+      let currentNonce = this.walletNonces.get(walletIndex);
+
+      if (currentNonce === undefined) {
+        // If nonce not in map, get it from blockchain
+        currentNonce = await this.publicClient.getTransactionCount({
+          address: this.walletClients[walletIndex].account.address
+        });
+        
+        // Ensure currentNonce is a bigint before storing it
+        if (currentNonce !== undefined) {
+          this.walletNonces.set(walletIndex, currentNonce);
+        } else {
+          throw new Error(`Failed to get nonce for wallet ${walletIndex}`);
+        }
+      }
+      
+      const wallet = this.walletClients[walletIndex];
+      
+      // Process the transaction
+      try {
+        let hash: string | undefined;
+
+        if (tx.type === TX_TYPE_JUMP) {
+          // Record jump transaction
+          const { request } = await this.publicClient.simulateContract({
+            address: this.contractAddress as `0x${string}`,
+            abi: this.abi,
+            functionName: 'recordJump',
+            args: [
+              tx.player_address as `0x${string}`,
+              BigInt(tx.height || 0),
+              BigInt(tx.score || 0),
+              tx.game_id
+            ],
+            account: wallet.account,
+            nonce: currentNonce // Explicitly set nonce
+          });
+          
+          hash = await wallet.writeContract(request);
+          
+        } else if (tx.type === TX_TYPE_GAME_OVER) {
+          // Record game over transaction
+          const { request } = await this.publicClient.simulateContract({
+            address: this.contractAddress as `0x${string}`,
+            abi: this.abi,
+            functionName: 'recordGameOver',
+            args: [
+              tx.player_address as `0x${string}`,
+              BigInt(tx.score || 0),
+              tx.game_id
+            ],
+            account: wallet.account,
+            nonce: currentNonce // Explicitly set nonce
+          });
+          
+          hash = await wallet.writeContract(request);
+        }
+        
+        // Update database
+        if (hash) {
+          const client = await pool.connect();
+          try {
+            // Update transaction status in database
+            await client.query(
+              'UPDATE dino_transaction_queue SET status = $1, hash = $2, wallet_index = $3 WHERE id = $4',
+              ['sent', hash, walletIndex, tx.id]
+            );
+          } finally {
+            client.release();
+          }
+          
+          // Increment nonce for next transaction
+          this.walletNonces.set(walletIndex, (currentNonce as bigint) + BigInt(1));
+          
+          // Increment counters
+          this.walletStatus[walletIndex].totalProcessed++;
+          
+          // Reset consecutive errors on success
+          this.walletStatus[walletIndex].consecutiveErrors = 0;
+          
+          // Track in analytics
+          if (analyticsService) {
+            analyticsService.trackTransaction({
+              id: tx.id,
+              player_address: tx.player_address,
+              game_id: tx.game_id,
+              type: tx.type,
+              status: 'sent',
+              hash,
+              score: tx.score
+            });
+          }
+          
+          // Broadcast transaction update
+          broadcastTransactionUpdate({
+            id: tx.id,
+            player_address: tx.player_address,
+            game_id: tx.game_id,
+            type: tx.type,
+            status: 'sent',
+            hash,
+            score: tx.score
+          });
+          
+          logger.info(`Wallet ${walletIndex} processed ${tx.type} transaction for ${tx.player_address}, hash: ${hash}`);
+        }
+        
+        // Remove the processed transaction from queue
+        queue.shift();
+        this.walletQueues.set(walletIndex, queue);
+        
+      } catch (err) {
+        logger.error(`Wallet ${walletIndex} error processing transaction ${tx.id}:`, err);
+        
+        // Check for nonce error
+        const errorMessage = err instanceof Error ? err.message : 'Unknown transaction error';
+        
+        if (errorMessage.includes('NONCE_TOO_SMALL')) {
+          // If nonce is too small, get the current nonce from blockchain and try again
+          logger.warn(`Nonce too small for wallet ${walletIndex}, refreshing nonce`);
+          const newNonce = await this.publicClient.getTransactionCount({
+            address: this.walletClients[walletIndex].account.address
+          });
+          this.walletNonces.set(walletIndex, newNonce);
+          
+          // Keep transaction in queue to retry with correct nonce
+        } else {
+          // For other errors, mark the transaction as failed
+          const client = await pool.connect();
+          try {
+            await client.query(
+              'UPDATE dino_transaction_queue SET status = $1, retries = retries + 1 WHERE id = $2',
+              ['failed', tx.id]
+            );
+          } finally {
+            client.release();
+          }
+          
+          // Track failed transaction
+          if (analyticsService) {
+            analyticsService.trackTransaction({
+              id: tx.id,
+              player_address: tx.player_address,
+              game_id: tx.game_id,
+              type: tx.type,
+              status: 'failed',
+              error: errorMessage
+            });
+          }
+          
+          // Broadcast failure
+          broadcastTransactionUpdate({
+            id: tx.id,
+            player_address: tx.player_address,
+            game_id: tx.game_id,
+            type: tx.type,
+            status: 'failed'
+          });
+          
+          // Remove the failed transaction from queue
+          queue.shift();
+          this.walletQueues.set(walletIndex, queue);
+          
+          // Increment consecutive errors
+          this.walletStatus[walletIndex].consecutiveErrors += 1;
+        }
+      }
+      
+    } catch (error) {
+      logger.error(`Error in wallet queue processing for wallet ${walletIndex}:`, error);
+      this.walletStatus[walletIndex].consecutiveErrors += 1;
+    } finally {
+      // Add a small delay before processing the next transaction
+      setTimeout(() => {
+        this.walletStatus[walletIndex].isProcessing = false;
+      }, this.TRANSACTION_DELAY);
+    }
   }
 
   /**
@@ -333,7 +626,7 @@ class BlockchainManager {
    */
   startTransactionWatcher(onConfirmation: (tx: any, status: 'confirmed' | 'failed', receipt: any) => void) {
     if (!this.publicClient) {
-      this.logger.warn('Cannot start transaction watcher: public client not initialized');
+      logger.warn('Cannot start transaction watcher: public client not initialized');
       return;
     }
 
@@ -367,258 +660,29 @@ class BlockchainManager {
                   // Call the confirmation callback
                   onConfirmation(tx, status, receipt);
                   
-                  this.logger.info(`Transaction ${tx.hash} confirmed with status ${status}`);
+                  logger.info(`Transaction ${tx.hash} confirmed with status ${status}`);
                 }
               } catch (txError) {
-                this.logger.error(`Error checking transaction ${tx.hash}:`, txError);
+                logger.error(`Error checking transaction ${tx.hash}:`, txError);
               }
             }
           } finally {
             client.release();
           }
         } catch (error) {
-          this.logger.error("Error in transaction watcher:", error);
+          logger.error("Error in transaction watcher:", error);
         }
       }
     });
     
-    this.logger.info("Transaction confirmation watcher started");
+    logger.info("Transaction confirmation watcher started");
   }
 
+  // Reset a wallet's error count
   resetWallet(index: number) {
     if (index >= 0 && index < this.walletStatus.length) {
       this.walletStatus[index].consecutiveErrors = 0;
       logger.info(`Reset wallet ${index}`);
-      
-      // Restart processing if needed
-      if (this.processingIntervals[index]) {
-        clearInterval(this.processingIntervals[index]);
-        this.processingIntervals[index] = setInterval(
-          () => this.processTransactionBatch(index),
-          200
-        );
-      }
-    }
-  }
-
-  private async processTransactionBatch(walletIndex: number) {
-    // Skip if this wallet is already processing or has too many errors
-    if (
-      !this.walletClients[walletIndex] || 
-      this.walletStatus[walletIndex].isProcessing ||
-      this.walletStatus[walletIndex].consecutiveErrors >= 5
-    ) {
-      return;
-    }
-    
-    // Mark wallet as processing
-    this.walletStatus[walletIndex].isProcessing = true;
-    
-    try {
-      // Get batch of pending transactions
-      const client = await pool.connect();
-      
-      try {
-        // Start transaction
-        await client.query('BEGIN');
-        
-        // Get batch of pending transactions using the function we created
-        const result = await client.query(
-          'SELECT * FROM get_next_pending_transactions($1)',
-          [BATCH_SIZE]
-        );
-        
-        const transactions = result.rows;
-        
-        if (transactions.length === 0) {
-          // No pending transactions, release client and return
-          await client.query('COMMIT');
-          this.walletStatus[walletIndex].isProcessing = false;
-          return;
-        }
-        
-        // Process batch of transactions
-        const wallet = this.walletClients[walletIndex];
-        let processedCount = 0;
-        let successCount = 0;
-        
-        
-        // Process each transaction
-        for (const tx of transactions) {
-          try {
-            let hash;
-            
-            if (tx.type === TX_TYPE_JUMP) {
-              // Record jump transaction
-              const { request } = await this.publicClient.simulateContract({
-                address: this.contractAddress as `0x${string}`,
-                abi: this.abi,
-                functionName: 'recordJump',
-                args: [
-                  tx.player_address as `0x${string}`,
-                  BigInt(tx.height || 0),
-                  BigInt(tx.score || 0),
-                  tx.game_id
-                ],
-                account: wallet.account
-              });
-              
-              hash = await wallet.writeContract(request);
-
-              // After successful processing, update PostHog
-              if (analyticsService) {
-                analyticsService.trackTransaction({
-                  id: tx.id,
-                  player_address: tx.player_address,
-                  game_id: tx.game_id,
-                  type: tx.type,
-                  status: 'sent',
-                  hash,
-                  score: tx.score
-                });
-              }
-              
-            } else if (tx.type === TX_TYPE_GAME_OVER) {
-              // Record game over transaction
-              const { request } = await this.publicClient.simulateContract({
-                address: this.contractAddress as `0x${string}`,
-                abi: this.abi,
-                functionName: 'recordGameOver',
-                args: [
-                  tx.player_address as `0x${string}`,
-                  BigInt(tx.score || 0),
-                  tx.game_id
-                ],
-                account: wallet.account
-              });
-              
-              hash = await wallet.writeContract(request);
-
-              // After successful processing, update PostHog
-              if (analyticsService) {
-                analyticsService.trackTransaction({
-                  id: tx.id,
-                  player_address: tx.player_address,
-                  game_id: tx.game_id,
-                  type: tx.type,
-                  status: 'sent',
-                  hash,
-                  score: tx.score
-                });
-              }
-            }
-            
-            // Update transaction status in database
-            await client.query(
-              'UPDATE dino_transaction_queue SET status = $1, hash = $2, wallet_index = $3 WHERE id = $4',
-              ['sent', hash, walletIndex, tx.id]
-            );
-            
-            // Increment counters
-            processedCount++;
-            successCount++;
-            
-            // Publish transaction update to Redis if enabled
-            if (USE_REDIS) {
-              await redisClient.publish('tx:processed', JSON.stringify({
-                id: tx.id,
-                player_address: tx.player_address,
-                game_id: tx.game_id,
-                type: tx.type,
-                status: 'sent',
-                hash,
-                score: tx.score
-              }));
-            } else {
-              // Broadcast directly if Redis not used
-              broadcastTransactionUpdate({
-                id: tx.id,
-                player_address: tx.player_address,
-                game_id: tx.game_id,
-                type: tx.type,
-                status: 'sent',
-                hash,
-                score: tx.score
-              });
-            }
-            
-            logger.info(`Wallet ${walletIndex} processed ${tx.type} transaction for ${tx.player_address}, hash: ${hash}`);
-            
-          } catch (err) {
-            logger.error(`Wallet ${walletIndex} error processing transaction ${tx.id}:`, err);
-
-            const errorMessage = err instanceof Error ? err.message : 'Unknown transaction error';
-            
-            // Mark transaction as failed
-            await client.query(
-              'UPDATE dino_transaction_queue SET status = $1, retries = retries + 1 WHERE id = $2',
-              ['failed', tx.id]
-            );
-
-            // Track failed transaction
-            if (analyticsService) {
-              analyticsService.trackTransaction({
-                id: tx.id,
-                player_address: tx.player_address,
-                game_id: tx.game_id,
-                type: tx.type,
-                status: 'failed',
-                error: errorMessage
-              });
-            }
-            
-            // Publish failure to Redis if enabled
-            if (USE_REDIS) {
-              await redisClient.publish('tx:processed', JSON.stringify({
-                id: tx.id,
-                player_address: tx.player_address,
-                game_id: tx.game_id,
-                type: tx.type,
-                status: 'failed'
-              }));
-            } else {
-              broadcastTransactionUpdate({
-                id: tx.id,
-                player_address: tx.player_address,
-                game_id: tx.game_id,
-                type: tx.type,
-                status: 'failed'
-              });
-            }
-          }
-        }
-        
-        // Commit transaction
-        await client.query('COMMIT');
-        
-        // Update wallet status
-        this.walletStatus[walletIndex].lastProcessedTime = Date.now();
-        this.walletStatus[walletIndex].totalProcessed += successCount;
-        
-        if (successCount > 0) {
-          // Reset consecutive errors on success
-          this.walletStatus[walletIndex].consecutiveErrors = 0;
-        } else if (processedCount > 0) {
-          // Increment consecutive errors only if we tried to process transactions
-          this.walletStatus[walletIndex].consecutiveErrors += 1;
-        }
-        
-        // Broadcast updated wallet status
-        broadcastWalletStatus();
-        
-      } catch (dbError) {
-        await client.query('ROLLBACK');
-        logger.error(`Database error in wallet ${walletIndex}:`, dbError);
-        this.walletStatus[walletIndex].consecutiveErrors += 1;
-      } finally {
-        client.release();
-      }
-      
-    } catch (error) {
-      logger.error(`Error in transaction processing for wallet ${walletIndex}:`, error);
-      this.walletStatus[walletIndex].consecutiveErrors += 1;
-    } finally {
-      this.walletStatus[walletIndex].isProcessing = false;
     }
   }
 }
@@ -987,7 +1051,8 @@ socket.on('client:gameStart', async (data) => {
         
         connectedClients.set(socket.id, clientInfo);
         
-        // Add transaction to queue
+        // First add to database
+        let txId = null;
         const client = await pool.connect();
         try {
           // Add transaction to queue
@@ -999,7 +1064,7 @@ socket.on('client:gameStart', async (data) => {
             [playerAddress, gameId, TX_TYPE_JUMP, score, height, Date.now(), 'pending']
           );
           
-          const txId = result.rows[0].id;
+          txId = result.rows[0].id;
           
           // Record jump event
           await client.query(
@@ -1008,6 +1073,9 @@ socket.on('client:gameStart', async (data) => {
              VALUES ($1, $2, $3, $4)`,
             [gameId, playerAddress, 'jump', JSON.stringify({ height, score })]
           );
+        } finally {
+          client.release();
+        }
           
           // Acknowledge jump recorded
           socket.emit('server:jump', {
@@ -1017,6 +1085,21 @@ socket.on('client:gameStart', async (data) => {
             timestamp: Date.now()
           });
           
+          // Then queue the transaction for blockchain processing
+          if (txId) {
+            // Queue the transaction instead of processing immediately
+            const selectedWallet = blockchainManager.queueTransaction({
+              id: txId,
+              player_address: playerAddress,
+              game_id: gameId,
+              type: TX_TYPE_JUMP,
+              score: score,
+              height: height
+            });
+            
+            logger.info(`Jump transaction ${txId} queued for wallet ${selectedWallet}`);
+          }
+
           // Track jump in PostHog
           if (analyticsService) {
             analyticsService.trackTransaction({
@@ -1030,17 +1113,13 @@ socket.on('client:gameStart', async (data) => {
             });
           }
           
-          logger.info(`Jump recorded for ${playerAddress}, score: ${score}, height: ${height}`);
-        } finally {
-          client.release();
+        } catch (err) {
+          logger.error(`Error processing jump: ${err}`);
+          socket.emit('server:error', {
+            message: 'Failed to record jump'
+          });
         }
-      } catch (err) {
-        logger.error(`Error processing jump: ${err}`);
-        socket.emit('server:error', {
-          message: 'Failed to record jump'
-        });
-      }
-    });
+      });
     
     // Handle game over
     socket.on('client:gameOver', async (data) => {
@@ -1056,71 +1135,104 @@ socket.on('client:gameStart', async (data) => {
           return;
         }
         
-        // Update client info if needed
-        if (clientInfo.playerAddress !== playerAddress) {
-          clientInfo.playerAddress = playerAddress;
-        }
-        if (clientInfo.gameId !== gameId) {
-          clientInfo.gameId = gameId;
-        }
+        // Calculate game duration if we have a start time
+        const gameStartTime = clientInfo.gameStartTime || clientInfo.connectedAt;
+        const gameDuration = gameStartTime ? Date.now() - gameStartTime : 0;
         
+        // Update client info
+        clientInfo.playerAddress = playerAddress;
+        clientInfo.gameId = gameId;
+        clientInfo.finalScore = finalScore;
+        clientInfo.distance = distance;
         connectedClients.set(socket.id, clientInfo);
         
-        // Add transaction to queue
+        // DB operations first - separate from blockchain operations
+        let txId = null;
+        let jumpsCount = 0;
+        let isHighScore = false;
+        
         const client = await pool.connect();
         try {
-          // Add transaction to queue
-          const result = await client.query(
-            `INSERT INTO dino_transaction_queue 
-             (player_address, game_id, type, score, timestamp, status) 
-             VALUES ($1, $2, $3, $4, $5, $6) 
-             RETURNING id`,
-            [playerAddress, gameId, TX_TYPE_GAME_OVER, finalScore, Date.now(), 'pending']
-          );
+          // Begin transaction for database operations
+          await client.query('BEGIN');
           
-          const txId = result.rows[0].id;
-          
-          // Update game session in database
-          await client.query(
-            `UPDATE dino_player_sessions 
-             SET end_time = NOW(), final_score = $1, distance_traveled = $2, completed = true 
-             WHERE game_id = $3 AND player_address = $4`,
-            [finalScore, distance, gameId, playerAddress]
-          );
-          
-          // Record game over event
-          await client.query(
-            `INSERT INTO dino_game_events 
-             (game_id, player_address, event_type, event_data) 
-             VALUES ($1, $2, $3, $4)`,
-            [gameId, playerAddress, 'gameover', JSON.stringify({ finalScore, distance })]
-          );
-          
-          // Check if this is a high score
-          const leaderboardResult = await client.query(
-            `SELECT COUNT(*) FROM dino_leaderboard 
-             WHERE score <= $1 AND player_address != $2`,
-            [finalScore, playerAddress]
-          );
-          
-          const isHighScore = parseInt(leaderboardResult.rows[0].count) > 0;
-          
-          if (isHighScore) {
-            // Add to leaderboard
-            await client.query(
-              `INSERT INTO dino_leaderboard 
-               (player_address, score, game_id) 
-               VALUES ($1, $2, $3)`,
-              [playerAddress, finalScore, gameId]
+          try {
+            // 1. Add transaction to queue table
+            const result = await client.query(
+              `INSERT INTO dino_transaction_queue 
+               (player_address, game_id, type, score, timestamp, status) 
+               VALUES ($1, $2, $3, $4, $5, $6) 
+               RETURNING id`,
+              [playerAddress, gameId, TX_TYPE_GAME_OVER, finalScore, Date.now(), 'pending']
             );
             
-            // Notify about high score
-            io?.to(`player:${playerAddress}`).emit('server:highScore', {
-              playerAddress,
-              score: finalScore,
-              gameId
-            });
+            txId = result.rows[0].id;
+            
+            // 2. Get jumps count for rich analytics
+            const jumpsResult = await client.query(
+              `SELECT COUNT(*) FROM dino_game_events 
+               WHERE game_id = $1 AND player_address = $2 AND event_type = 'jump'`,
+              [gameId, playerAddress]
+            );
+            
+            jumpsCount = parseInt(jumpsResult.rows[0].count) || 0;
+            
+            // 3. Update game session
+            await client.query(
+              `UPDATE dino_player_sessions 
+               SET end_time = NOW(), final_score = $1, distance_traveled = $2, jumps_count = $3, completed = true 
+               WHERE game_id = $4 AND player_address = $5`,
+              [finalScore, distance, jumpsCount, gameId, playerAddress]
+            );
+            
+            // 4. Record game over event
+            await client.query(
+              `INSERT INTO dino_game_events 
+               (game_id, player_address, event_type, event_data) 
+               VALUES ($1, $2, $3, $4)`,
+              [gameId, playerAddress, 'gameover', JSON.stringify({ 
+                finalScore, 
+                distance, 
+                duration: gameDuration 
+              })]
+            );
+            
+            // 5. Check if this is a high score
+            const leaderboardResult = await client.query(
+              `SELECT COUNT(*) FROM dino_leaderboard 
+               WHERE score <= $1 AND player_address != $2`,
+              [finalScore, playerAddress]
+            );
+            
+            isHighScore = parseInt(leaderboardResult.rows[0].count) > 0;
+            
+            if (isHighScore) {
+              // 6. Add to leaderboard if high score
+              await client.query(
+                `INSERT INTO dino_leaderboard 
+                 (player_address, score, game_id) 
+                 VALUES ($1, $2, $3)`,
+                [playerAddress, finalScore, gameId]
+              );
+              
+              // Notify about high score
+              io?.to(`player:${playerAddress}`).emit('server:highScore', {
+                playerAddress,
+                score: finalScore,
+                gameId
+              });
+            }
+            
+            // Commit database transaction
+            await client.query('COMMIT');
+          } catch (dbError) {
+            // Rollback on error
+            await client.query('ROLLBACK');
+            throw dbError;
           }
+        } finally {
+          client.release();
+        }
           
           // Acknowledge game over
           socket.emit('server:gameOver', {
@@ -1131,30 +1243,43 @@ socket.on('client:gameStart', async (data) => {
             isHighScore,
             timestamp: Date.now()
           });
-
-          // Track game over in PostHog
-          if (analyticsService) {
-            analyticsService.trackTransaction({
+          
+          // THEN queue the blockchain transaction
+          if (txId) {
+            // Queue the transaction instead of processing immediately
+            const selectedWallet = blockchainManager.queueTransaction({
               id: txId,
               player_address: playerAddress,
               game_id: gameId,
               type: TX_TYPE_GAME_OVER,
-              score: finalScore,
-              status: 'pending'
+              score: finalScore
             });
+            
+            // Transaction queued for blockchain processing
+            logger.info(`Game over transaction ${txId} queued for wallet ${selectedWallet}, player: ${playerAddress}, score: ${finalScore}`);
+            
+            // Also add blockchain transaction analytics separate from game completion analytics
+            if (analyticsService) {
+              analyticsService.trackTransaction({
+                id: txId,
+                player_address: playerAddress,
+                game_id: gameId,
+                type: TX_TYPE_GAME_OVER,
+                score: finalScore,
+                status: 'pending',
+                wallet: selectedWallet
+              });
+            }
           }
           
-          logger.info(`Game over recorded for ${playerAddress}, score: ${finalScore}`);
-        } finally {
-          client.release();
+          logger.info(`Game over recorded for ${playerAddress}, score: ${finalScore}, duration: ${gameDuration}ms, jumps: ${jumpsCount}`);
+        } catch (err) {
+          logger.error(`Error processing game over: ${err}`);
+          socket.emit('server:error', {
+            message: 'Failed to record game over'
+          });
         }
-      } catch (err) {
-        logger.error(`Error processing game over: ${err}`);
-        socket.emit('server:error', {
-          message: 'Failed to record game over'
-        });
-      }
-    });
+      });
     
     // Handle leaderboard requests
     socket.on('client:getLeaderboard', async () => {
