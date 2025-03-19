@@ -289,12 +289,16 @@ export async function startGame(playerAddress) {
   console.log(`BlockchainSync: Starting new game with ID: ${gameId}`);
   
   try {
-    // Send the game start request to the server
+    // Get player username if available
+    const username = state.username || '';
+    
+    // Send the game start request to the server with username
     if (socket.connected) {
-      console.log(`BlockchainSync: Emitting gameStart request for ${gameId}`);
+      console.log(`BlockchainSync: Emitting gameStart request for ${gameId} with username ${username}`);
       socket.emit('client:gameStart', {
         gameId,
-        playerAddress
+        playerAddress,
+        username
       });
     }
     
@@ -525,7 +529,7 @@ export function authenticateUser(playerAddress, username, callback) {
     return false;
   }
   
-  console.log(`BlockchainSync: Authenticating user with address ${playerAddress}`);
+  console.log(`BlockchainSync: Authenticating user with address ${playerAddress} and username ${username}`);
   
   // Set up one-time listener for auth response
   socket.once('server:auth', (response) => {
@@ -534,19 +538,20 @@ export function authenticateUser(playerAddress, username, callback) {
     if (response.status === 'authenticated') {
       console.log(`BlockchainSync: User ${playerAddress} authenticated successfully`);
       
-      // Update state if needed
+      // Update state with username if provided
       updateState({
         ...state,
         playerAddress: playerAddress,
+        username: username,
         authenticated: true
       });
       
       // Show success toast
       toast.success('Wallet Connected', {
-        description: 'Your wallet is now connected to the game'
+        description: username ? `Welcome, ${username}!` : 'Your wallet is now connected to the game'
       });
       
-      if (callback) callback({ success: true, playerAddress });
+      if (callback) callback({ success: true, playerAddress, username });
     } else {
       console.error(`BlockchainSync: Authentication failed:`, response.message);
       
@@ -571,7 +576,7 @@ export function authenticateUser(playerAddress, username, callback) {
     if (callback) callback({ success: false, message: 'Authentication timeout' });
   }, 5000);
   
-  // Send auth request
+  // Send auth request with username
   socket.emit('client:auth', { 
     playerAddress: playerAddress,
     username: username

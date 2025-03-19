@@ -227,6 +227,10 @@ class BlockchainManager {
   private readonly QUEUE_PROCESS_INTERVAL = 200; // ms between processing attempts
   private readonly TRANSACTION_DELAY = 100; // ms between transactions for same wallet
   private isInitialized: boolean = false;
+  private lastUsedWalletIndex: number = -1;
+  private readonly TRANSACTION_SPACING = 200; // ms between transactions for same wallet
+
+
 
   constructor(contractAddress: string, abi: any[]) {
     this.contractAddress = contractAddress;
@@ -234,22 +238,39 @@ class BlockchainManager {
   }
 
   async initialize() {
-    if (this.isInitialized) return;
+    if (this.isInitialized && this.walletClients.length > 0) {
+      logger.info('Wallets already initialized');
+      return;
+    }
     
     try {
+      // Reset wallet collections
+      this.walletClients = [];
+      this.walletStatus = [];
+      this.walletQueues = new Map();
+      this.walletNonces = new Map();
+      this.lastUsedWalletIndex = -1;
+      
       // Define wallet private keys
       const privateKeys = [];
       for (let i = 0; i < WALLET_COUNT; i++) {
-        const key = process.env[`PRIVATE_KEY_${i+1}`] || '';
-        if (key) privateKeys.push(key);
+        const key = process.env[`PRIVATE_KEY_${i+1}`];
+        if (key && key.trim() !== '') {
+          privateKeys.push(key);
+          logger.info(`Found private key ${i+1}`);
+        } else {
+          logger.warn(`Private key ${i+1} not found or is empty`);
+        }
       }
       
       if (privateKeys.length === 0) {
+        logger.error('No private keys configured');
         throw new Error('No private keys configured');
       }
       
       // Initialize RPC URL
       const rpcUrl = process.env.RPC_URL || 'https://dream-rpc.somnia.network';
+      logger.info(`Using RPC URL: ${rpcUrl}`);
       
       // Initialize public client
       this.publicClient = createPublicClient({
@@ -264,7 +285,23 @@ class BlockchainManager {
       // Initialize wallet clients
       for (let i = 0; i < privateKeys.length; i++) {
         try {
-          const account = privateKeyToAccount(privateKeys[i] as `0x${string}`);
+          logger.info(`Initializing wallet ${i}...`);
+          
+          // Ensure private key has 0x prefix
+          const privateKey = privateKeys[i].startsWith('0x') 
+            ? privateKeys[i] 
+            : `0x${privateKeys[i]}`;
+            
+          const account = privateKeyToAccount(privateKey as `0x${string}`);
+          
+          // Test if the account is valid
+          if (!account || !account.address) {
+            logger.error(`Invalid account for wallet ${i}`);
+            continue;
+          }
+          
+          logger.info(`Wallet ${i} account address: ${account.address}`);
+          
           const walletClient = createWalletClient({
             account,
             chain: SomniaChain,
@@ -289,10 +326,16 @@ class BlockchainManager {
           this.walletQueues.set(i, []);
           
           // Initialize nonce from blockchain
-          const nonce = await this.publicClient.getTransactionCount({
-            address: account.address
-          });
-          this.walletNonces.set(i, nonce);
+          try {
+            const nonce = await this.publicClient.getTransactionCount({
+              address: account.address
+            });
+            this.walletNonces.set(i, nonce);
+            logger.info(`Wallet ${i} nonce: ${nonce}`);
+          } catch (nonceError) {
+            // Use 0 as default nonce if we can't get it from the blockchain
+            this.walletNonces.set(i, BigInt(0));
+          }
           
           logger.info(`Wallet ${i} initialized with address ${account.address}`);
         } catch (error) {
@@ -300,17 +343,50 @@ class BlockchainManager {
         }
       }
       
+      if (this.walletClients.length === 0) {
+        logger.error('Failed to initialize any wallets');
+        throw new Error('Failed to initialize any wallets');
+      }
+      
       this.isInitialized = true;
       logger.info(`Blockchain manager initialized with ${this.walletClients.length} wallets`);
       
-      // Start processing for each wallet
       // Start queue processing
       this.startQueueProcessing();
-
       
+      return true;
     } catch (error) {
       logger.error('Blockchain manager initialization error:', error);
       throw error;
+    }
+  }
+
+  async getNextNonce(walletIndex: number): Promise<bigint> {
+    try {
+      // Always get fresh on-chain nonce
+      const onChainNonce = await this.publicClient.getTransactionCount({
+        address: this.walletClients[walletIndex].account.address,
+        blockTag: 'pending' // Include pending transactions
+      });
+      
+      // Compare with locally tracked nonce
+      const trackedNonce = this.walletNonces.get(walletIndex) || BigInt(0);
+      
+      // Use the maximum value to avoid nonce errors
+      const nextNonce = onChainNonce > trackedNonce ? onChainNonce : trackedNonce;
+      
+      // Update tracker for future reference
+      this.walletNonces.set(walletIndex, nextNonce);
+      
+      return nextNonce;
+    } catch (error) {
+      logger.error(`Failed to get nonce for wallet ${walletIndex}:`, error);
+      
+      // Fall back to tracked nonce if we have one
+      const fallbackNonce = this.walletNonces.get(walletIndex);
+      if (fallbackNonce !== undefined) return fallbackNonce;
+      
+      throw new Error(`Cannot determine nonce for wallet ${walletIndex}`);
     }
   }
 
@@ -322,6 +398,23 @@ class BlockchainManager {
         }
       }, this.QUEUE_PROCESS_INTERVAL);
       logger.info('Started transaction queue processing');
+    }
+
+    queueToWallet(walletIndex: number, tx: any) {
+      // Add directly to this wallet's queue
+      const queue = this.walletQueues.get(walletIndex) || [];
+      queue.push({
+        ...tx,
+        queuedAt: Date.now()
+      });
+      this.walletQueues.set(walletIndex, queue);
+      
+      logger.info(`Transaction ${tx.id} added directly to wallet ${walletIndex} queue`);
+      
+      // Update wallet status
+      this.walletStatus[walletIndex].queueLength = queue.length;
+      
+      return true;
     }
 
   // Stop queue processing
@@ -343,13 +436,89 @@ class BlockchainManager {
     return [...this.walletStatus];
   }
 
+  selectNextWallet() {
+    if (!this.walletClients || this.walletClients.length === 0) {
+      logger.error('No wallet clients initialized');
+      return -1;
+    }
+  
+    const totalWallets = this.walletClients.length;
+    let bestWalletIndex = -1;
+    let lowestErrorCount = Number.MAX_SAFE_INTEGER;
+    let lowestQueueLength = Number.MAX_SAFE_INTEGER;
+  
+    // First try to find non-processing wallet with lowest error count
+    for (let i = 0; i < totalWallets; i++) {
+      const wallet = this.walletStatus[i];
+      if (!wallet.isProcessing && wallet.consecutiveErrors < lowestErrorCount) {
+        lowestErrorCount = wallet.consecutiveErrors;
+        bestWalletIndex = i;
+      }
+    }
+  
+    // If all wallets are processing, find one with lowest queue
+    if (bestWalletIndex === -1) {
+      for (let i = 0; i < totalWallets; i++) {
+        const wallet = this.walletStatus[i];
+        const queue = this.walletQueues.get(i) || [];
+        if (wallet.consecutiveErrors < 5 && queue.length < lowestQueueLength) {
+          lowestQueueLength = queue.length;
+          bestWalletIndex = i;
+        }
+      }
+    }
+  
+    // If still no wallet, pick any with errors less than 5
+    if (bestWalletIndex === -1) {
+      for (let i = 0; i < totalWallets; i++) {
+        if (this.walletStatus[i].consecutiveErrors < 5) {
+          bestWalletIndex = i;
+          break;
+        }
+      }
+    }
+  
+    this.lastUsedWalletIndex = bestWalletIndex;
+    return bestWalletIndex;
+  }
+
   // Queue a transaction to the best available wallet
   queueTransaction(tx: any) {
-    const walletIndex = this.selectBestWallet();
+    const walletIndex = this.selectNextWallet();
     
     if (walletIndex === -1) {
       logger.error('No available wallets to process transaction');
-      return false;
+      
+      // Add error handling - update transaction status to 'failed' in database
+      (async () => {
+        try {
+          const client = await pool.connect();
+          try {
+            await client.query(
+              'UPDATE dino_transaction_queue SET status = $1, retries = retries + 1 WHERE id = $2',
+              ['failed', tx.id]
+            );
+            
+            logger.error(`Transaction ${tx.id} marked as failed due to no available wallets`);
+            
+            // Broadcast failure
+            broadcastTransactionUpdate({
+              id: tx.id,
+              player_address: tx.player_address,
+              game_id: tx.game_id,
+              type: tx.type,
+              status: 'failed',
+              error: 'No available wallets to process transaction'
+            });
+          } finally {
+            client.release();
+          }
+        } catch (dbError) {
+          logger.error(`Error updating failed transaction ${tx.id}:`, dbError);
+        }
+      })();
+      
+      return -1; // Return -1 to indicate failure
     }
     
     // Add to wallet's queue
@@ -360,57 +529,48 @@ class BlockchainManager {
     });
     this.walletQueues.set(walletIndex, queue);
     
-    logger.debug(`Transaction added to wallet ${walletIndex} queue, length: ${queue.length}`);
+    logger.info(`Transaction ${tx.id} added to wallet ${walletIndex} queue, length: ${queue.length}`);
     
     // Update wallet status
     this.walletStatus[walletIndex].queueLength = queue.length;
     
     return walletIndex;
   }
+  
 
-  // Select best wallet for a new transaction
-  selectBestWallet() {
-    // If all wallets have errors, return -1
-    if (this.walletStatus.every(w => w.consecutiveErrors >= 5)) {
-      return -1;
+  async processPlayerNameUpdate(walletIndex: number, tx: any) {
+    const wallet = this.walletClients[walletIndex];
+    const currentNonce = this.walletNonces.get(walletIndex);
+    
+    if (!currentNonce) {
+      throw new Error(`No nonce available for wallet ${walletIndex}`);
     }
     
-    // Find the wallet with the shortest queue that doesn't have too many errors
-    let minQueueLength = Number.MAX_SAFE_INTEGER;
-    let selectedWalletIndex = -1;
-    
-    for (let i = 0; i < this.walletClients.length; i++) {
-      // Skip wallets with too many consecutive errors
-      if (this.walletStatus[i].consecutiveErrors >= 5) {
-        continue;
-      }
+    try {
+      // Simulate the contract call first
+      const { request } = await this.publicClient.simulateContract({
+        address: this.contractAddress as `0x${string}`,
+        abi: this.abi,
+        functionName: 'setPlayer',
+        args: [
+          tx.player_address as `0x${string}`,
+          tx.username || "" 
+        ],
+        account: wallet.account,
+        nonce: currentNonce
+      });
       
-      const queue = this.walletQueues.get(i) || [];
+      // Send the transaction
+      const hash = await wallet.writeContract(request);
       
-      // Prefer wallets that aren't currently processing
-      if (!this.walletStatus[i].isProcessing && queue.length < minQueueLength) {
-        minQueueLength = queue.length;
-        selectedWalletIndex = i;
-      }
+      // Update the nonce for next transaction
+      this.walletNonces.set(walletIndex, currentNonce + BigInt(1));
+      
+      return hash;
+    } catch (error) {
+      logger.error(`Error updating player name for ${tx.player_address}:`, error);
+      throw error;
     }
-    
-    // If all wallets are processing, just pick the one with shortest queue
-    if (selectedWalletIndex === -1) {
-      for (let i = 0; i < this.walletClients.length; i++) {
-        // Skip wallets with too many consecutive errors
-        if (this.walletStatus[i].consecutiveErrors >= 5) {
-          continue;
-        }
-        
-        const queue = this.walletQueues.get(i) || [];
-        if (queue.length < minQueueLength) {
-          minQueueLength = queue.length;
-          selectedWalletIndex = i;
-        }
-      }
-    }
-    
-    return selectedWalletIndex;
   }
 
   // Process the transaction queue for a specific wallet
@@ -437,7 +597,7 @@ class BlockchainManager {
       const tx = queue[0]; // Get the next transaction without removing it yet
       
       // Get the current nonce for this wallet
-      let currentNonce = this.walletNonces.get(walletIndex);
+      let currentNonce = await this.getNextNonce(walletIndex);
 
       if (currentNonce === undefined) {
         // If nonce not in map, get it from blockchain
@@ -447,7 +607,7 @@ class BlockchainManager {
         
         // Ensure currentNonce is a bigint before storing it
         if (currentNonce !== undefined) {
-          this.walletNonces.set(walletIndex, currentNonce);
+          this.walletNonces.set(walletIndex, currentNonce as bigint);
         } else {
           throw new Error(`Failed to get nonce for wallet ${walletIndex}`);
         }
@@ -467,12 +627,13 @@ class BlockchainManager {
             functionName: 'recordJump',
             args: [
               tx.player_address as `0x${string}`,
-              BigInt(tx.height || 0),
-              BigInt(tx.score || 0),
+              // Convert to string first to handle undefined/null
+              BigInt(String(tx.height || 0)),
+              BigInt(String(tx.score || 0)),
               tx.game_id
             ],
             account: wallet.account,
-            nonce: currentNonce // Explicitly set nonce
+            nonce: currentNonce
           });
           
           hash = await wallet.writeContract(request);
@@ -485,14 +646,17 @@ class BlockchainManager {
             functionName: 'recordGameOver',
             args: [
               tx.player_address as `0x${string}`,
-              BigInt(tx.score || 0),
+              BigInt(String(tx.score || 0)),
               tx.game_id
             ],
             account: wallet.account,
-            nonce: currentNonce // Explicitly set nonce
+            nonce: currentNonce
           });
           
           hash = await wallet.writeContract(request);
+        } else if (tx.type === 'setplayer') {
+          // Handle player name update
+          hash = await this.processPlayerNameUpdate(walletIndex, tx);
         }
         
         // Update database
@@ -507,9 +671,6 @@ class BlockchainManager {
           } finally {
             client.release();
           }
-          
-          // Increment nonce for next transaction
-          this.walletNonces.set(walletIndex, (currentNonce as bigint) + BigInt(1));
           
           // Increment counters
           this.walletStatus[walletIndex].totalProcessed++;
@@ -683,6 +844,63 @@ class BlockchainManager {
   }
 }
 
+// Function to process queue from database periodically
+async function startProcessingQueueFromDB() {
+  setInterval(async () => {
+    const client = await pool.connect();
+    try {
+      // Begin transaction
+      await client.query('BEGIN');
+      
+      // Get batch of pending transactions
+      const result = await client.query(`
+        SELECT * FROM dino_transaction_queue 
+        WHERE status = 'pending' 
+        ORDER BY id ASC
+        LIMIT ${BATCH_SIZE}
+        FOR UPDATE SKIP LOCKED
+      `);
+      
+      if (result.rows.length > 0) {
+        logger.info(`Found ${result.rows.length} pending transactions to process`);
+        
+        // Process each transaction through blockchain manager
+        for (const tx of result.rows) {
+          const walletIndex = blockchainManager.selectNextWallet();
+          
+          if (walletIndex === -1) {
+            logger.error('No available wallets to process transaction');
+            await client.query(
+              'UPDATE dino_transaction_queue SET status = $1, retries = retries + 1 WHERE id = $2',
+              ['failed', tx.id]
+            );
+          } else {
+            // Queue transaction for processing with selected wallet
+            blockchainManager.queueToWallet(walletIndex, tx);
+            
+            // Update status to 'processing' to prevent other processes from picking it up
+            await client.query(
+              'UPDATE dino_transaction_queue SET status = $1, wallet_index = $2 WHERE id = $3',
+              ['processing', walletIndex, tx.id]
+            );
+
+            // Add delay between transactions for the same wallet
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+        }
+      }
+      
+      // Commit transaction
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error('Error processing transaction queue:', error);
+    } finally {
+      client.release();
+    }
+  }, 1000); // Check every second
+}
+
 // Create blockchain manager
 const blockchainManager = new BlockchainManager(CONTRACT_ADDRESS, DinoRunnerABI);
 
@@ -690,20 +908,18 @@ const blockchainManager = new BlockchainManager(CONTRACT_ADDRESS, DinoRunnerABI)
 if (cluster.isPrimary) {
   logger.info(`Master ${process.pid} is running`);
   
-  // Check if this is a worker-only process
-  if (process.env.WORKER_ONLY === 'true') {
-    logger.info('Running in worker-only mode, no transaction processing');
-  } else {
-    // Initialize blockchain manager in the primary process
-    blockchainManager.initialize().catch(err => {
-      logger.error('Failed to initialize blockchain manager:', err);
-      process.exit(1);
-    });
-  }
+  // Initialize blockchain manager in the primary process
+  blockchainManager.initialize().then(() => {
+    // Start processing queue from database in master process only
+    startProcessingQueueFromDB();
+  }).catch(err => {
+    logger.error('Failed to initialize blockchain manager:', err);
+    process.exit(1);
+  });
 
   // Fork workers for handling WebSocket connections
   for (let i = 0; i < WORKER_COUNT; i++) {
-    cluster.fork();
+    cluster.fork({ WORKER_ONLY: 'true' });
   }
 
   cluster.on('exit', (worker, code, signal) => {
@@ -754,8 +970,6 @@ if (cluster.isPrimary) {
   // Track connected clients
   const connectedClients = new Map();
 
-  
-
 // WebSocket event handlers
   io.on('connection', async (socket: ClientSocket) => {
     logger.info(`Client connected: ${socket.id}`);
@@ -781,7 +995,7 @@ if (cluster.isPrimary) {
     // Handle client authentication
     socket.on('client:auth', async (data) => {
       try {
-        const { playerAddress, signature, username } = data;
+        const { playerAddress, username } = data;
         const normalizedAddress = playerAddress.toLowerCase(); // Normalize here
     
         // Use normalizedAddress everywhere
@@ -790,6 +1004,7 @@ if (cluster.isPrimary) {
           const clientInfo = connectedClients.get(socket.id);
           if (clientInfo) {
             clientInfo.playerAddress = normalizedAddress;
+            clientInfo.username = username; // Store username in client info
             connectedClients.set(socket.id, clientInfo);
           }
     
@@ -806,21 +1021,34 @@ if (cluster.isPrimary) {
             );
     
             if (profileResult.rows.length === 0) {
-              logger.info(`Creating new player profile for ${playerAddress}`);
+              logger.info(`Creating new player profile for ${normalizedAddress}, username: ${username}`);
               await client.query(
                 'INSERT INTO dino_player_profiles (player_address, username, first_played_at, last_played_at) VALUES ($1, $2, NOW(), NOW())',
                 [normalizedAddress, username]
               );
-              logger.info(`Updating username for ${playerAddress} to ${username}`);
             } else if (username) {
               await client.query(
                 'UPDATE dino_player_profiles SET username = $1, last_played_at = NOW() WHERE player_address = $2',
                 [username, normalizedAddress]
               );
             }
-          } finally {
-            client.release();
+            try {
+              // Add the username to the transaction data
+              const txResult = await client.query(
+                `INSERT INTO dino_transaction_queue 
+                (player_address, game_id, type, timestamp, status, username) 
+                VALUES ($1, $2, $3, $4, $5, $6) 
+                RETURNING id`,
+                [normalizedAddress, 'profile-update', 'setplayer', Date.now(), 'pending', username]
+              );
+                        
+              logger.info(`Player name update queued for ${normalizedAddress}, username: ${username}`);
+            } catch (err) {
+              // Non-fatal error, continue with authentication
           }
+        } finally {
+          client.release();
+        }
     
           socket.join(`player:${normalizedAddress}`); // Use normalized address
 
@@ -1105,34 +1333,6 @@ if (cluster.isPrimary) {
             timestamp: Date.now()
           });
           
-          // Then queue the transaction for blockchain processing
-          if (txId) {
-            // Queue the transaction instead of processing immediately
-            const selectedWallet = blockchainManager.queueTransaction({
-              id: txId,
-              player_address: playerAddress,
-              game_id: gameId,
-              type: TX_TYPE_JUMP,
-              score: score,
-              height: height
-            });
-            
-            logger.info(`Jump transaction ${txId} queued for wallet ${selectedWallet}`);
-          }
-
-          // Track jump in PostHog
-          if (analyticsService) {
-            analyticsService.trackTransaction({
-              id: txId,
-              player_address: playerAddress,
-              game_id: gameId,
-              type: TX_TYPE_JUMP,
-              score: score,
-              height: height,
-              status: 'pending'
-            });
-          }
-          
         } catch (err) {
           logger.error(`Error processing jump: ${err}`);
           socket.emit('server:error', {
@@ -1224,6 +1424,8 @@ if (cluster.isPrimary) {
                WHERE score <= $1 AND player_address != $2`,
               [finalScore, normalizedAddress]
             );
+
+            logger.info(`Leaderboard check for ${normalizedAddress}: ${leaderboardResult.rows[0].count}`);
             
             isHighScore = parseInt(leaderboardResult.rows[0].count) > 0;
             
@@ -1235,6 +1437,8 @@ if (cluster.isPrimary) {
                  VALUES ($1, $2, $3)`,
                 [normalizedAddress, finalScore, gameId]
               );
+
+              logger.info(`Added ${normalizedAddress} with score ${finalScore} to leaderboard`);
               
               // Notify about high score
               io?.to(`player:${normalizedAddress}`).emit('server:highScore', {
@@ -1265,35 +1469,6 @@ if (cluster.isPrimary) {
             timestamp: Date.now()
           });
           
-          // THEN queue the blockchain transaction
-          if (txId) {
-            // Queue the transaction instead of processing immediately
-            const selectedWallet = blockchainManager.queueTransaction({
-              id: txId,
-              player_address: playerAddress,
-              game_id: gameId,
-              type: TX_TYPE_GAME_OVER,
-              score: finalScore
-            });
-            
-            // Transaction queued for blockchain processing
-            logger.info(`Game over transaction ${txId} queued for wallet ${selectedWallet}, player: ${playerAddress}, score: ${finalScore}`);
-            
-            // Also add blockchain transaction analytics separate from game completion analytics
-            if (analyticsService) {
-              analyticsService.trackTransaction({
-                id: txId,
-                player_address: playerAddress,
-                game_id: gameId,
-                type: TX_TYPE_GAME_OVER,
-                score: finalScore,
-                status: 'pending',
-                wallet: selectedWallet
-              });
-            }
-          }
-          
-          logger.info(`Game over recorded for ${playerAddress}, score: ${finalScore}, duration: ${gameDuration}ms, jumps: ${jumpsCount}`);
         } catch (err) {
           logger.error(`Error processing game over: ${err}`);
           socket.emit('server:error', {

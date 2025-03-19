@@ -96,8 +96,18 @@ export class AnalyticsService {
           timestamp: Date.now()
         }
       });
+    } else if (txData.type === 'setplayer') {
+        // Track player registration event
+        this.posthog.capture({
+          distinctId: txData.player_address || 'anonymous',
+          event: 'player_registered',
+          properties: {
+            player_name: txData.username,
+            timestamp: Date.now()
+          }
+        });
+      }
     }
-  }
 
   /**
    * Track transaction confirmation on blockchain

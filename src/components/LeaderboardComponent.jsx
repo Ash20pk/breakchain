@@ -50,7 +50,7 @@ const Leaderboard = () => {
         rank: index + 1,
         player: entry.player_address,
         score: Number(entry.score),
-        displayName: entry.dino_player_profiles?.username || formatAddress(entry.player_address)
+        displayName: entry.username || formatAddress(entry.player_address)
       }));
 
       setLeaderboard(processedEntries);
