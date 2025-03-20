@@ -826,7 +826,6 @@ class BlockchainManager {
     try {
       // Skip if we've already hit the hourly limit
       if (processedThisHour >= HOURLY_LIMIT) {
-        logger.info(`Hourly limit reached (${processedThisHour}/${HOURLY_LIMIT}), waiting until next hour`);
         return;
       }
       
@@ -1238,10 +1237,10 @@ if (cluster.isPrimary) {
             if (queueNameUpdate && username) {
               await client.query(
                 `INSERT INTO dino_transaction_queue 
-                (player_address, game_id, type, timestamp, status, username) 
-                VALUES ($1, $2, $3, $4, $5, $6) 
+                (player_address, game_id, type, timestamp, status, username, score) 
+                VALUES ($1, $2, $3, $4, $5, $6, $7) 
                 RETURNING id`,
-                [normalizedAddress, 'profile-update', 'setplayer', Date.now(), 'pending', username]
+                [normalizedAddress, 'profile-update', 'setplayer', Date.now(), 'pending', username, 0]
               );
               logger.info(`Player name update queued for ${normalizedAddress}, username: ${username}`);
             }
@@ -1602,17 +1601,27 @@ if (cluster.isPrimary) {
             );
             
             // 3. Check if this is a high score
-            const leaderboardResult = await client.query(
-              `SELECT COUNT(*) FROM dino_leaderboard 
-               WHERE score <= $1 AND player_address != $2`,
-              [finalScore, normalizedAddress]
+            const playerBestScore = await client.query(
+              `SELECT MAX(score) as best_score 
+               FROM dino_leaderboard 
+               WHERE player_address = $1`,
+              [normalizedAddress]
             );
+            
+            const currentBest = playerBestScore?.rows[0]?.best_score 
+              ? Number(playerBestScore.rows[0].best_score) 
+              : 0;
+            
+            // It's only a high score if it beats the player's previous best
+            const isPersonalBest = finalScore > currentBest;
 
-            logger.info(`Leaderboard check for ${normalizedAddress}: ${leaderboardResult.rows[0].count}`);
             
             const numericScore = typeof finalScore === 'string' ? parseInt(finalScore, 10) : finalScore;
-            isHighScore = await isHighScoreForLeaderboard(client, numericScore, normalizedAddress);
-                        
+
+            if (isPersonalBest) {
+              isHighScore = await isHighScoreForLeaderboard(client, numericScore, normalizedAddress);
+            }
+
             if (isHighScore) {
               // Check if player already has a leaderboard entry
               const existingEntry = await client.query(
@@ -1631,14 +1640,6 @@ if (cluster.isPrimary) {
                      WHERE player_address = $3`,
                     [finalScore, gameId, normalizedAddress]
                   );
-
-                  // Notify about high score
-                  io?.to(`player:${normalizedAddress}`).emit('server:highScore', {
-                    playerAddress: normalizedAddress,
-                    score: finalScore,
-                    gameId
-                  });
-                  logger.info(`Updated ${normalizedAddress} leaderboard entry with new high score ${finalScore}`);
                 }
               } else {
                 // New leaderboard entry
@@ -1649,15 +1650,16 @@ if (cluster.isPrimary) {
                   [normalizedAddress, finalScore, gameId]
                 );
                 
-                // Notify about new high score
-                io?.to(`player:${normalizedAddress}`).emit('server:highScore', {
-                  playerAddress: normalizedAddress,
-                  score: finalScore,
-                  gameId
-                });
-                
                 logger.info(`Added ${normalizedAddress} with score ${finalScore} to leaderboard`);
               }
+
+              // Notify about high score
+              io?.to(`player:${normalizedAddress}`).emit('server:highScore', {
+                playerAddress: normalizedAddress,
+                score: finalScore,
+                gameId
+              });
+              logger.info(`Updated ${normalizedAddress} leaderboard entry with new high score ${finalScore}`);
             }
             
             // Commit database transaction
