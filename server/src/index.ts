@@ -469,12 +469,12 @@ class BlockchainManager {
     let lowestErrorCount = Number.MAX_SAFE_INTEGER;
     let lowestQueueLength = Number.MAX_SAFE_INTEGER;
   
-    // First try to find non-processing wallet with lowest error count
+    // First try to find a non-processing wallet
     for (let i = 0; i < totalWallets; i++) {
       const wallet = this.walletStatus[i];
-      if (!wallet.isProcessing && wallet.consecutiveErrors < lowestErrorCount) {
-        lowestErrorCount = wallet.consecutiveErrors;
+      if (!wallet.isProcessing && wallet.consecutiveErrors < 5) {
         bestWalletIndex = i;
+        break;
       }
     }
   
@@ -483,20 +483,18 @@ class BlockchainManager {
       for (let i = 0; i < totalWallets; i++) {
         const wallet = this.walletStatus[i];
         const queue = this.walletQueues.get(i) || [];
-        if (wallet.consecutiveErrors < 5 && queue.length < lowestQueueLength) {
+        if (queue.length < lowestQueueLength) {
           lowestQueueLength = queue.length;
           bestWalletIndex = i;
         }
       }
     }
   
-    // If still no wallet, pick any with errors less than 5
+    // If still no wallet, pick any available one
     if (bestWalletIndex === -1) {
       for (let i = 0; i < totalWallets; i++) {
-        if (this.walletStatus[i].consecutiveErrors < 5) {
-          bestWalletIndex = i;
-          break;
-        }
+        bestWalletIndex = i;
+        break;
       }
     }
   
@@ -600,8 +598,7 @@ class BlockchainManager {
     // Skip if this wallet is already processing or has too many errors
     if (
       !this.walletClients[walletIndex] || 
-      this.walletStatus[walletIndex].isProcessing ||
-      this.walletStatus[walletIndex].consecutiveErrors >= 5
+      this.walletStatus[walletIndex].isProcessing
     ) {
       return;
     }

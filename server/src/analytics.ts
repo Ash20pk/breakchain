@@ -185,9 +185,6 @@ export class AnalyticsService {
     this.transactionBuffer = this.transactionBuffer.filter(
       tx => tx.timestamp > now - BUFFER_WINDOW_MS
     );
-    
-    // Log current stats
-    this.logger.info(`Current TPS: ${this.currentTps}, Recent Tx: ${recentTransactions}`);
   }
   
   /**
