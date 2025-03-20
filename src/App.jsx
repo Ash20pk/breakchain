@@ -226,7 +226,7 @@ function App() {
         setGameStarted(true);
         setLoadingGame(false);
         
-        toast.success('Game started!', {
+        toast.success('Blockchain Initialized!', {
           description: 'Your jumps and score will be recorded on the blockchain'
         });
       } catch (error) {
