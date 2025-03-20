@@ -56,14 +56,14 @@ html {
 /* Game title */
 .game-title {
   text-align: center;
-  margin: 0 0 var(--spacing-medium) 0;
+  margin: var(--spacing-medium) 0 var(--spacing-medium) 0;
   width: 100%;
 }
 
 .game-title h1 {
   font-size: var(--font-xlarge);
   color: var(--primary-color);
-  margin: 0;
+  margin-top: var(--spacing-large);
   /* Prevent text from overflowing on small screens */
   word-break: break-word;
 }
