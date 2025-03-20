@@ -9,6 +9,13 @@ import config from './config';
 import Leaderboard from './components/LeaderboardComponent';
 import BlockchainSync, { initialize as initializeBlockchain } from './hooks/BlockchainSync';
 import NamePromptModal from './components/NamePromptModal'; 
+import { createClient } from '@supabase/supabase-js';
+
+// Initialize Supabase client
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
 
 function App() {
   const [gameStarted, setGameStarted] = useState(false);
@@ -25,6 +32,39 @@ function App() {
   const gameContainerRef = useRef(null);
   const { address, isConnected } = useAccount();
 
+  // Fetch high score
+  useEffect(() => {
+    if (!address) return;
+    const fetchHighScore = async () => {
+      try {
+        const { data: highScore, error } = await supabase
+          .from('dino_leaderboard')
+          .select(`
+            player_address,
+            score
+          `)
+          .eq('player_address', address.toLowerCase())
+          .order('score', { ascending: false })
+          .limit(1);
+        
+        if (!error && highScore && highScore.length > 0) {
+          const score = Number(highScore[0].score);
+          console.log('High score:', score);
+          localStorage.setItem('highScore', score);
+        }
+      } catch (err) {
+        console.error('Error fetching high score:', err);
+        toast.error('Failed to fetch high score');
+      }
+    };
+
+    // Add a small delay to allow connection
+    setTimeout(() => {
+      fetchHighScore();
+    }, 1000);
+    
+  }, [address]);
+  
   // Initialize blockchain connection
   useEffect(() => {
     const initialize = async () => {
@@ -47,6 +87,10 @@ function App() {
   
   useEffect(() => {
     const checkUsername = async () => {
+      if (localStorage.getItem('username')) {
+        setName(localStorage.getItem('username'));
+        return;
+      }
       console.log('Checking username:', {
         isConnected,
         address,
@@ -65,6 +109,7 @@ function App() {
           } else {
             console.log('Username found:', result.username);
             setName(result.username);
+            localStorage.setItem('username', result.username);
           }
         } catch (error) {
           console.error('Error checking username:', error);
@@ -140,35 +185,6 @@ function App() {
     } catch (error) {
       console.log('Error playing sound:', error);
     }
-  }, []);
-  
-  // Handle jump from mobile controls
-  const handleJump = useCallback(() => {
-    // Send keypress event to the game
-    const event = new KeyboardEvent('keydown', {
-      code: 'Space',
-      key: ' ',
-      which: 32,
-      keyCode: 32,
-      bubbles: true
-    });
-    document.dispatchEvent(event);
-    
-    // Play sound for mobile feedback
-    playButtonSound();
-  }, [playButtonSound]);
-  
-  // Handle duck from mobile controls
-  const handleDuck = useCallback(() => {
-    // Send keypress event to the game
-    const event = new KeyboardEvent('keydown', {
-      code: 'ArrowDown',
-      key: 'ArrowDown',
-      which: 40,
-      keyCode: 40,
-      bubbles: true
-    });
-    document.dispatchEvent(event);
   }, []);
 
   // Show intro animation with smooth transition

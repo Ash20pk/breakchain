@@ -229,6 +229,8 @@ class BlockchainManager {
   private isInitialized: boolean = false;
   private lastUsedWalletIndex: number = -1;
   private readonly TRANSACTION_SPACING = 200; // ms between transactions for same wallet
+  private watcherInterval: NodeJS.Timeout | null = null;
+  private hourlyResetInterval: NodeJS.Timeout | null = null;
 
 
 
@@ -237,11 +239,31 @@ class BlockchainManager {
     this.abi = abi;
   }
 
+  /**
+   * Stop the transaction watcher
+   */
+  stopTransactionWatcher() {
+    if (this.watcherInterval) {
+      clearInterval(this.watcherInterval);
+      this.watcherInterval = null;
+    }
+    
+    if (this.hourlyResetInterval) {
+      clearInterval(this.hourlyResetInterval);
+      this.hourlyResetInterval = null;
+    }
+    
+    logger.info("Transaction watcher stopped");
+  }
+
   async initialize() {
     if (this.isInitialized && this.walletClients.length > 0) {
       logger.info('Wallets already initialized');
       return;
     }
+
+    // Stop existing watchers if reinitializing
+    this.stopTransactionWatcher();
     
     try {
       // Reset wallet collections
@@ -787,52 +809,112 @@ class BlockchainManager {
       return;
     }
 
-    this.publicClient.watchBlocks({
-      onBlock: async (blockNumber: bigint) => {
-        try {
-          // Get pending transactions from DB
-          const client = await pool.connect();
+    logger.info('Starting rate-limited transaction watcher...');
+  
+      // Transaction processing variables
+      const BATCH_SIZE = 10; // Process 10 transactions at a time
+      const CHECK_INTERVAL = 10000; // Check every 10 seconds
+      const HOURLY_LIMIT = 10; // Process only 10 transactions per hour
+    
+      // Track processed count within the current hour
+    let processedThisHour = 0;
+    let hourStartTime = Date.now();
+    
+    // Reset the hourly counter every hour
+    const hourlyReset = setInterval(() => {
+      processedThisHour = 0;
+      hourStartTime = Date.now();
+      logger.info('Resetting hourly transaction check counter');
+    }, 3600000); // 1 hour
+
+    // Create polling interval 
+  const pollInterval = setInterval(async () => {
+    try {
+      // Skip if we've already hit the hourly limit
+      if (processedThisHour >= HOURLY_LIMIT) {
+        logger.info(`Hourly limit reached (${processedThisHour}/${HOURLY_LIMIT}), waiting until next hour`);
+        return;
+      }
+      
+      // Calculate how many we can process in this batch
+      const remaining = HOURLY_LIMIT - processedThisHour;
+      const toProcess = Math.min(remaining, BATCH_SIZE);
+      
+      // Get pending transactions from DB
+      const client = await pool.connect();
+      try {
+        const pendingTxs = await client.query(
+          "SELECT * FROM dino_transaction_queue WHERE status = 'sent' AND hash IS NOT NULL ORDER BY timestamp ASC LIMIT $1",
+          [toProcess]
+        );
+        
+        if (pendingTxs.rows.length === 0) {
+          return; // No pending transactions
+        }
+        
+        logger.info(`Checking ${pendingTxs.rows.length} of ${toProcess} pending transactions for confirmation`);
+        
+        // Check each transaction for confirmation
+        for (const tx of pendingTxs.rows) {
           try {
-            const pendingTxs = await client.query(
-              "SELECT * FROM dino_transaction_queue WHERE status = 'sent' AND hash IS NOT NULL LIMIT 100"
-            );
+            // Increment counter as we're processing this transaction
+            processedThisHour++;
             
-            // Check each transaction for confirmation
-            for (const tx of pendingTxs.rows) {
-              try {
-                const receipt = await this.publicClient.getTransactionReceipt({
-                  hash: tx.hash as `0x${string}`
-                });
+            const receipt = await this.publicClient.getTransactionReceipt({
+              hash: tx.hash as `0x${string}`
+            });
+            
+            if (receipt) {
+              // Transaction is confirmed
+              const status = receipt.status === 'success' ? 'confirmed' : 'failed';
+              
+              // Update transaction status in DB
+              await client.query(
+                "UPDATE dino_transaction_queue SET status = $1 WHERE id = $2",
+                [status, tx.id]
+              );
+              
+              // Call the confirmation callback
+              onConfirmation(tx, status, receipt);
+              
+              logger.info(`Transaction ${tx.hash} confirmed with status ${status} (${processedThisHour}/${HOURLY_LIMIT} this hour)`);
+            } else {
+              // Check if transaction is too old
+              const txTimestamp = new Date(tx.timestamp).getTime();
+              const hoursAgo = Date.now() - (12 * 3600000); // 12 hours
+              
+              if (txTimestamp < hoursAgo) {
+                await client.query(
+                  "UPDATE dino_transaction_queue SET status = 'failed' WHERE id = $1",
+                  [tx.id]
+                );
+                logger.warn(`Marking old transaction ${tx.hash} as failed (over 12 hours old)`);
                 
-                if (receipt) {
-                  // Transaction is confirmed
-                  const status = receipt.status === 'success' ? 'confirmed' : 'failed';
-                  
-                  // Update transaction status in DB
-                  await client.query(
-                    "UPDATE dino_transaction_queue SET status = $1 WHERE id = $2",
-                    [status, tx.id]
-                  );
-                  
-                  // Call the confirmation callback
-                  onConfirmation(tx, status, receipt);
-                  
-                  logger.info(`Transaction ${tx.hash} confirmed with status ${status}`);
-                }
-              } catch (txError) {
-                logger.error(`Error checking transaction ${tx.hash}:`, txError);
+                // Call callback with failed status
+                onConfirmation(tx, 'failed', null);
+              } else {
+                logger.info(`Transaction ${tx.hash} not yet confirmed, will retry later`);
               }
             }
-          } finally {
-            client.release();
+          } catch (txError) {
+            logger.warn(`Error checking transaction ${tx.hash}: ${txError instanceof Error ? txError.message : txError}`);
           }
-        } catch (error) {
-          logger.error("Error in transaction watcher:", error);
         }
+      } finally {
+        client.release();
       }
-    });
+    } catch (error) {
+      logger.error("Error in transaction watcher:", error);
+    }
+  }, CHECK_INTERVAL);
     
-    logger.info("Transaction confirmation watcher started");
+    // Store interval references for shutdown
+    this.watcherInterval = pollInterval;
+    this.hourlyResetInterval = hourlyReset;
+  
+    logger.info(`Transaction confirmation watcher started: ${BATCH_SIZE} per batch, ${HOURLY_LIMIT} per hour, checking every ${CHECK_INTERVAL/1000}s`);
+  
+    return pollInterval;
   }
 
   // Reset a wallet's error count
@@ -962,6 +1044,48 @@ if (cluster.isPrimary) {
     process.exit(1);
   });
 
+  // Start transaction watcher in master process
+  blockchainManager.startTransactionWatcher((tx, status, receipt) => {
+    // Update the existing transaction in the database
+      (async () => {
+        const client = await pool.connect();
+        try {
+          // Just update status of the existing transaction
+          await client.query(
+            `UPDATE dino_transaction_queue 
+            SET status = $1
+            WHERE id = $2`,
+            [status, tx.id]
+          );
+        
+        // If Redis is enabled, publish confirmation for workers to broadcast
+        if (USE_REDIS && redisClient) {
+          await redisClient.publish('tx:confirmation', JSON.stringify({
+            id: tx.id,
+            player_address: tx.player_address,
+            game_id: tx.game_id,
+            type: tx.type,
+            status,
+            hash: tx.hash,
+            score: tx.score
+          }));
+        }
+        
+        // Track in analytics
+        if (analyticsService) {
+          analyticsService.trackTransactionConfirmation(tx.hash, status, {
+            ...tx,
+            blockNumber: receipt?.blockNumber
+          });
+        }
+        
+        logger.info(`Transaction ${tx.hash} confirmed with status ${status}`);
+      } finally {
+        client.release();
+      }
+    })();
+  });
+
   // Fork workers for handling WebSocket connections
   for (let i = 0; i < WORKER_COUNT; i++) {
     cluster.fork({ WORKER_ONLY: 'true' });
@@ -1041,84 +1165,128 @@ if (cluster.isPrimary) {
     socket.on('client:auth', async (data) => {
       try {
         const { playerAddress, username } = data;
-        const normalizedAddress = playerAddress.toLowerCase(); // Normalize here
-    
-        // Use normalizedAddress everywhere
+        const normalizedAddress = playerAddress.toLowerCase(); // Normalize address
+        
+        // Validate signature (currently bypassed in development)
         const isValid = true; // validateSignature(normalizedAddress, signature);
-        if (isValid) {
-          const clientInfo = connectedClients.get(socket.id);
-          if (clientInfo) {
-            clientInfo.playerAddress = normalizedAddress;
-            clientInfo.username = username; // Store username in client info
-            connectedClients.set(socket.id, clientInfo);
-          }
-    
-          const client = await pool.connect();
+        
+        if (!isValid) {
+          socket.emit('server:auth', {
+            status: 'error',
+            message: 'Invalid signature'
+          });
+          return;
+        }
+        
+        // Update client info in memory
+        const clientInfo = connectedClients.get(socket.id);
+        if (clientInfo) {
+          clientInfo.playerAddress = normalizedAddress;
+          clientInfo.username = username;
+          connectedClients.set(socket.id, clientInfo);
+        }
+        
+        const client = await pool.connect();
+        try {
+          // Begin transaction for consistent database updates
+          await client.query('BEGIN');
+          
           try {
+            // Always record the WebSocket session
             await client.query(
-              'INSERT INTO dino_websocket_sessions (session_id, player_address, status) VALUES ($1, $2, $3)',
+              'INSERT INTO dino_websocket_sessions (session_id, player_address, status) VALUES ($1, $2, $3) ' +
+              'ON CONFLICT (session_id) DO UPDATE SET player_address = $2, status = $3, last_active_at = NOW()',
               [socket.id, normalizedAddress, 'active']
             );
-    
+            
+            // Check if player profile exists
             const profileResult = await client.query(
-              'SELECT * FROM dino_player_profiles WHERE player_address = $1',
-              [normalizedAddress] // Use normalized address
+              'SELECT username FROM dino_player_profiles WHERE player_address = $1',
+              [normalizedAddress]
             );
-    
-            if (profileResult.rows.length === 0) {
-              logger.info(`Creating new player profile for ${normalizedAddress}, username: ${username}`);
+            
+            let existingUsername = null;
+            let usernameChanged = false;
+            let queueNameUpdate = false;
+            
+            if (profileResult.rows.length > 0) {
+              // Profile exists
+              existingUsername = profileResult.rows[0].username;
+              
+              if (username && username !== existingUsername) {
+                // Username provided and different from existing - update it
+                await client.query(
+                  'UPDATE dino_player_profiles SET username = $1, last_played_at = NOW() WHERE player_address = $2',
+                  [username, normalizedAddress]
+                );
+                usernameChanged = true;
+                queueNameUpdate = true;
+                logger.info(`Updated username for ${normalizedAddress}: ${existingUsername} -> ${username}`);
+              } else {
+                // Just update last_played_at
+                await client.query(
+                  'UPDATE dino_player_profiles SET last_played_at = NOW() WHERE player_address = $1',
+                  [normalizedAddress]
+                );
+                logger.info(`Player profile exists for ${normalizedAddress}, username: ${existingUsername || 'none'}`);
+              }
+            } else {
+              // No profile exists - create new one
               await client.query(
                 'INSERT INTO dino_player_profiles (player_address, username, first_played_at, last_played_at) VALUES ($1, $2, NOW(), NOW())',
                 [normalizedAddress, username]
               );
-            } else if (username) {
-              await client.query(
-                'UPDATE dino_player_profiles SET username = $1, last_played_at = NOW() WHERE player_address = $2',
-                [username, normalizedAddress]
-              );
+              queueNameUpdate = true;
+              logger.info(`Created new player profile for ${normalizedAddress}, username: ${username || 'none'}`);
             }
-            try {
-              // Add the username to the transaction data
-              const txResult = await client.query(
+            
+            // Queue transaction to update name on-chain if needed and username is provided
+            if (queueNameUpdate && username) {
+              await client.query(
                 `INSERT INTO dino_transaction_queue 
                 (player_address, game_id, type, timestamp, status, username) 
                 VALUES ($1, $2, $3, $4, $5, $6) 
                 RETURNING id`,
                 [normalizedAddress, 'profile-update', 'setplayer', Date.now(), 'pending', username]
               );
-                        
               logger.info(`Player name update queued for ${normalizedAddress}, username: ${username}`);
-            } catch (err) {
-              // Non-fatal error, continue with authentication
+            }
+            
+            // Commit transaction
+            await client.query('COMMIT');
+            
+          } catch (err) {
+            // Rollback transaction on error
+            await client.query('ROLLBACK');
+            logger.error(`Database error in auth for ${normalizedAddress}:`, err);
+            throw err; // Re-throw to be caught by outer catch
           }
         } finally {
           client.release();
         }
-    
-          socket.join(`player:${normalizedAddress}`); // Use normalized address
-
-          // THEN track analytics AFTER DB operation is complete
-          if (analyticsService) {
-            analyticsService.identifyPlayer(normalizedAddress);
-            analyticsService.trackSessionStart(normalizedAddress, socket.id);
-          }
-          
-          socket.emit('server:auth', {
-            status: 'authenticated',
-            playerAddress: normalizedAddress,
-          });
-          logger.info(`Client ${socket.id} authenticated as ${normalizedAddress}`);
-        } else {
-          socket.emit('server:auth', {
-            status: 'error',
-            message: 'Invalid signature',
-          });
+        
+        // Join player-specific room for targeted updates
+        socket.join(`player:${normalizedAddress}`);
+        
+        // Track analytics after DB operations complete
+        if (analyticsService) {
+          analyticsService.identifyPlayer(normalizedAddress, { username });
+          analyticsService.trackSessionStart(normalizedAddress, socket.id);
         }
-      } catch (err) {
-        logger.error(`Error in client authentication: ${err}`);
+        
+        // Send successful authentication response
+        socket.emit('server:auth', {
+          status: 'authenticated',
+          playerAddress: normalizedAddress
+        });
+        
+        logger.info(`Client ${socket.id} authenticated as ${normalizedAddress}, username: ${username || 'none'}`);
+        
+      } catch (error: Error | unknown) {
+        logger.error(`Error in client authentication: ${error}`);
         socket.emit('server:auth', {
           status: 'error',
-          message: 'Authentication failed',
+          message: 'Authentication failed: ' + (error instanceof Error ? error.message : 'Unknown error')
         });
       }
     });
@@ -1359,13 +1527,6 @@ if (cluster.isPrimary) {
           
           txId = result.rows[0].id;
           
-          // Record jump event
-          await client.query(
-            `INSERT INTO dino_game_events 
-             (game_id, player_address, event_type, event_data) 
-             VALUES ($1, $2, $3, $4)`,
-            [gameId, normalizedAddress, 'jump', JSON.stringify({ height, score })]
-          );
         } finally {
           client.release();
         }
@@ -1434,24 +1595,7 @@ if (cluster.isPrimary) {
             
             txId = result.rows[0].id;
             
-            // 2. Get jumps count for rich analytics
-            const jumpsResult = await client.query(
-              `SELECT COUNT(*) FROM dino_game_events 
-               WHERE game_id = $1 AND player_address = $2 AND event_type = 'jump'`,
-              [gameId, normalizedAddress]
-            );
-            
-            jumpsCount = parseInt(jumpsResult.rows[0].count) || 0;
-            
-            // 3. Update game session
-            await client.query(
-              `UPDATE dino_player_sessions 
-               SET end_time = NOW(), final_score = $1, distance_traveled = $2, jumps_count = $3, completed = true 
-               WHERE game_id = $4 AND player_address = $5`,
-              [finalScore, distance, jumpsCount, gameId, normalizedAddress]
-            );
-            
-            // 4. Record game over event
+            // 2. Record game over event
             await client.query(
               `INSERT INTO dino_game_events 
                (game_id, player_address, event_type, event_data) 
@@ -1463,7 +1607,7 @@ if (cluster.isPrimary) {
               })]
             );
             
-            // 5. Check if this is a high score
+            // 3. Check if this is a high score
             const leaderboardResult = await client.query(
               `SELECT COUNT(*) FROM dino_leaderboard 
                WHERE score <= $1 AND player_address != $2`,
@@ -1476,15 +1620,35 @@ if (cluster.isPrimary) {
             isHighScore = await isHighScoreForLeaderboard(client, numericScore, normalizedAddress);
                         
             if (isHighScore) {
-              // 6. Add to leaderboard if high score
-              await client.query(
-                `INSERT INTO dino_leaderboard 
-                 (player_address, score, game_id) 
-                 VALUES ($1, $2, $3)`,
-                [normalizedAddress, finalScore, gameId]
+              // Check if player already has a leaderboard entry
+              const existingEntry = await client.query(
+                `SELECT id, score FROM dino_leaderboard 
+                 WHERE player_address = $1`,
+                [normalizedAddress]
               );
-
-              logger.info(`Added ${normalizedAddress} with score ${finalScore} to leaderboard`);
+              
+              if (existingEntry.rows.length > 0) {
+                // Player already exists in leaderboard - only update if new score is higher
+                const currentHighScore = existingEntry.rows[0].score;
+                if (finalScore > currentHighScore) {
+                  await client.query(
+                    `UPDATE dino_leaderboard 
+                     SET score = $1, game_id = $2, achieved_at = NOW() 
+                     WHERE player_address = $3`,
+                    [finalScore, gameId, normalizedAddress]
+                  );
+                  logger.info(`Updated ${normalizedAddress} leaderboard entry with new high score ${finalScore}`);
+                }
+              } else {
+                // New leaderboard entry
+                await client.query(
+                  `INSERT INTO dino_leaderboard 
+                   (player_address, score, game_id) 
+                   VALUES ($1, $2, $3)`,
+                  [normalizedAddress, finalScore, gameId]
+                );
+                logger.info(`Added ${normalizedAddress} with score ${finalScore} to leaderboard`);
+              }
               
               // Notify about high score
               io?.to(`player:${normalizedAddress}`).emit('server:highScore', {
@@ -1627,29 +1791,6 @@ if (cluster.isPrimary) {
   
   // Broadcast wallet status every 5 seconds
   setInterval(broadcastWalletStatus, 5000);
-
-  // Initialize the transaction watcher with a callback
-  blockchainManager.startTransactionWatcher((tx, status, receipt) => {
-    // Track confirmation in analytics
-    if (analyticsService) {
-      analyticsService.trackTransactionConfirmation(tx.hash, status, {
-        ...tx,
-        blockNumber: receipt.blockNumber
-      });
-    }
-    
-    // Broadcast confirmation
-    broadcastTransactionUpdate({
-      id: tx.id,
-      player_address: tx.player_address,
-      game_id: tx.game_id,
-      type: tx.type,
-      status,
-      hash: tx.hash,
-      score: tx.score,
-      blockNumber: receipt.blockNumber
-    });
-  });
 
   // Ensure proper shutdown
   process.on('SIGTERM', async () => {
