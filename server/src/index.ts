@@ -492,10 +492,7 @@ class BlockchainManager {
   
     // If still no wallet, pick any available one
     if (bestWalletIndex === -1) {
-      for (let i = 0; i < totalWallets; i++) {
-        bestWalletIndex = i;
-        break;
-      }
+      bestWalletIndex = (this.lastUsedWalletIndex + 1) % totalWallets;
     }
   
     this.lastUsedWalletIndex = bestWalletIndex;
@@ -1634,6 +1631,13 @@ if (cluster.isPrimary) {
                      WHERE player_address = $3`,
                     [finalScore, gameId, normalizedAddress]
                   );
+
+                  // Notify about high score
+                  io?.to(`player:${normalizedAddress}`).emit('server:highScore', {
+                    playerAddress: normalizedAddress,
+                    score: finalScore,
+                    gameId
+                  });
                   logger.info(`Updated ${normalizedAddress} leaderboard entry with new high score ${finalScore}`);
                 }
               } else {
@@ -1644,15 +1648,16 @@ if (cluster.isPrimary) {
                    VALUES ($1, $2, $3)`,
                   [normalizedAddress, finalScore, gameId]
                 );
+                
+                // Notify about new high score
+                io?.to(`player:${normalizedAddress}`).emit('server:highScore', {
+                  playerAddress: normalizedAddress,
+                  score: finalScore,
+                  gameId
+                });
+                
                 logger.info(`Added ${normalizedAddress} with score ${finalScore} to leaderboard`);
               }
-              
-              // Notify about high score
-              io?.to(`player:${normalizedAddress}`).emit('server:highScore', {
-                playerAddress: normalizedAddress,
-                score: finalScore,
-                gameId
-              });
             }
             
             // Commit database transaction

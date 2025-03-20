@@ -87,10 +87,6 @@ function App() {
   
   useEffect(() => {
     const checkUsername = async () => {
-      if (localStorage.getItem('username')) {
-        setName(localStorage.getItem('username'));
-        return;
-      }
       console.log('Checking username:', {
         isConnected,
         address,
@@ -109,7 +105,6 @@ function App() {
           } else {
             console.log('Username found:', result.username);
             setName(result.username);
-            localStorage.setItem('username', result.username);
           }
         } catch (error) {
           console.error('Error checking username:', error);
