@@ -249,7 +249,23 @@ function App() {
     return (
       <>
         <div className="game-container" ref={gameContainerRef}>
-          <Toaster position="top-right" richColors />
+        <Toaster 
+          position={isMobile ? "bottom-center" : "top-right"} // Position based on device
+          richColors={false}
+          closeButton={true}
+          theme="light"
+          toastOptions={{
+            duration: 4000,
+            style: {
+              width: '100%',
+              maxWidth: '100%',
+              border: '2px solid maroon',
+              background: '#fff',
+              borderRadius: '0',
+              padding: isMobile ? '8px' : '10px'
+            }
+          }}
+        />
         </div>
       </>
     );

@@ -380,6 +380,81 @@ footer {
   letter-spacing: 1px;
 }
 
+/* Custom Sonner toast styles to match pixel art UI */
+[data-sonner-toaster] {
+  font-family: 'Press Start 2P', monospace !important;
+  --border-radius: 0 !important;
+  top: 16px !important;
+  right: 16px !important;
+  bottom: auto !important;
+  left: auto !important;
+  width: 350px !important;
+  transform: none !important;
+}
+
+/* Individual toast */
+[data-sonner-toast] {
+  background-color: #fff !important;
+  border: 2px solid maroon !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  padding: 10px !important;
+  margin: 0 0 10px 0 !important;
+  max-width: 100% !important;
+  width: 100% !important;
+}
+
+/* Error toast */
+[data-sonner-toast][data-type="error"] {
+  border-color: maroon !important;
+  background-color: #fff !important;
+  color: maroon !important;
+}
+
+/* Icon container */
+[data-sonner-toast] [data-icon] {
+  margin-right: 10px !important;
+}
+
+/* Title */
+[data-sonner-toast] [data-title] {
+  font-family: 'Press Start 2P', monospace !important;
+  font-size: 12px !important;
+  color: maroon !important;
+  margin-bottom: 6px !important;
+}
+
+/* Description */
+[data-sonner-toast] [data-description] {
+  font-family: 'Press Start 2P', monospace !important;
+  font-size: 10px !important;
+  color: #535353 !important;
+}
+
+/* Toast for mobile viewport - switch to bottom-center */
+@media (max-width: 768px) {
+  [data-sonner-toaster] {
+    top: auto !important;
+    right: auto !important;
+    bottom: 10px !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    width: min(90%, 350px) !important;
+  }
+  
+  [data-sonner-toast] {
+    padding: 8px !important;
+  }
+  
+  [data-sonner-toast] [data-title] {
+    font-size: 10px !important;
+  }
+  
+  [data-sonner-toast] [data-description] {
+    font-size: 8px !important;
+  }
+}
+
 /* Optimized animations */
 @keyframes progressLoad {
   0% { width: 0%; }
