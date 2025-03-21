@@ -216,15 +216,6 @@ const Leaderboard = () => {
         </div>
       )}
       
-      <div className="leaderboard-controls">
-        <button 
-          className="pixel-button refresh-button"
-          onClick={handleRetry}
-        >
-          REFRESH
-        </button>
-      </div>
-      
       <p className="blockchain-note">
         All scores are permanently recorded on the Somnia blockchain
       </p>

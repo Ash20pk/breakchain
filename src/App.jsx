@@ -32,6 +32,7 @@ function App() {
   const gameContainerRef = useRef(null);
   const { address, isConnected } = useAccount();
 
+
   // Fetch high score
   useEffect(() => {
     if (!address) return;
@@ -308,10 +309,12 @@ function App() {
         onClose={() => setShowNamePrompt(false)}
       />
       
-      <div className="game-title">
-        <h1>DINO RUNNER</h1>
-        {!isConnected ? <div className="subtitle">ON-CHAIN EDITION</div> : <div className="connected-text">ON-CHAIN EDITION</div>}
-      </div>
+      {!showLeaderboard && (
+        <div className="game-title">
+          <h1>DINO RUNNER</h1>
+          {!isConnected ? <div className="subtitle">ON-CHAIN EDITION</div> : <div className="connected-text">ON-CHAIN EDITION</div>}
+        </div>
+      )}
       
       {showLeaderboard ? (
         <div className="leaderboard-view">
