@@ -201,6 +201,7 @@ async function fetchFailedTransactions(): Promise<Transaction[]> {
        WHERE status = 'failed' 
        AND timestamp > $1
        AND retries < $2
+       AND type != 'setplayer'
        ORDER BY timestamp ASC
        LIMIT $3`,
       [ageThreshold, MAX_RETRIES, BATCH_SIZE]
