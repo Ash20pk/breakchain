@@ -22,3 +22,44 @@ body {
 canvas {
   display: block;
 }
+
+/* Prevent text selection throughout the app */
+body {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none; /* Disable callout on iOS */
+}
+
+/* Improve touch feedback */
+.game-container {
+  touch-action: manipulation; /* Optimize for touch */
+  -webkit-tap-highlight-color: transparent; /* Remove highlight on tap */
+}
+
+/* When game is focused */
+body.game-focus * {
+  pointer-events: auto !important; /* Ensure events work */
+}
+
+/* Custom cursor for game */
+.game-container canvas {
+  cursor: default !important;
+}
+
+/* Prevent dragging images */
+img {
+  -webkit-user-drag: none;
+  -khtml-user-drag: none;
+  -moz-user-drag: none;
+  -o-user-drag: none;
+  user-drag: none;
+}
+
+/* For Internet Explorer */
+@media screen and (-ms-high-contrast: active), (-ms-high-contrast: none) {
+  body {
+    -ms-user-select: none;
+  }
+}

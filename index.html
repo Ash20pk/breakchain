@@ -49,5 +49,45 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      (function() {
+        // Block function keys globally
+        function blockFunctionKeys(e) {
+          // Modern browsers
+          if (e.key && e.key.match(/^F\d+$/)) {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+          }
+          
+          // Older browsers with keyCode
+          if (e.keyCode >= 112 && e.keyCode <= 123) {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+          }
+          
+          // Block dev shortcuts
+          if ((e.ctrlKey || e.metaKey) && 
+              (e.keyCode === 83 || e.keyCode === 85 || e.keyCode === 73 || 
+               e.key === 's' || e.key === 'u' || e.key === 'i')) {
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+          }
+        }
+      
+        // Add listeners with capture to intercept early
+        document.addEventListener('keydown', blockFunctionKeys, true);
+        document.addEventListener('keypress', blockFunctionKeys, true);
+        document.addEventListener('keyup', blockFunctionKeys, true);
+        
+        // Block right click
+        document.addEventListener('contextmenu', function(e) {
+          e.preventDefault();
+          return false;
+        }, true);
+      })();
+      </script>
   </body>
 </html>

@@ -1,3 +1,4 @@
+// src/main.jsx
 import './vite-node-polyfills';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
@@ -5,6 +6,10 @@ import App from './App.jsx';
 import Web3Provider from './components/Web3Provider';
 import './index.css';
 import { isProd } from './utils';
+import { setupInputBlocker } from './utils/inputBlocker';
+
+// Set up the input blocker to disable F keys, dev console, and right-click
+setupInputBlocker();
 
 // Initialize the React app
 ReactDOM.createRoot(document.getElementById('root')).render(

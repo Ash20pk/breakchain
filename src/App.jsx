@@ -32,6 +32,73 @@ function App() {
   const gameContainerRef = useRef(null);
   const { address, isConnected } = useAccount();
 
+  // Right-click protection
+  useEffect(() => {
+    const handleContextMenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      return false;
+    };
+
+    // Apply to entire document with capture phase to ensure it runs first
+    document.addEventListener('contextmenu', handleContextMenu, true);
+    
+    // Apply specifically to React components
+    const appContainer = document.querySelector('.app-container');
+    if (appContainer) {
+      appContainer.addEventListener('contextmenu', handleContextMenu, true);
+    }
+    
+    // If game has started, apply to game container
+    if (gameStarted && gameContainerRef.current) {
+      gameContainerRef.current.addEventListener('contextmenu', handleContextMenu, true);
+    }
+    
+    return () => {
+      document.removeEventListener('contextmenu', handleContextMenu, true);
+      if (appContainer) {
+        appContainer.removeEventListener('contextmenu', handleContextMenu, true);
+      }
+      if (gameStarted && gameContainerRef.current) {
+        gameContainerRef.current.removeEventListener('contextmenu', handleContextMenu, true);
+      }
+    };
+  }, [gameStarted]); // Dependency on gameStarted to re-apply when game starts
+
+  useEffect(() => {
+    const blockKeys = (e) => {
+      // F1-F12 keys (both by key name and key code 112-123)
+      if ((e.key && e.key.match(/^F\d+$/)) || (e.keyCode >= 112 && e.keyCode <= 123)) {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
+      
+      // Block developer shortcuts
+      if ((e.ctrlKey || e.metaKey) && ['u', 's', 'i', 'c', 'j'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
+    };
+  
+    // Apply the handler with capture to intercept early
+    window.addEventListener('keydown', blockKeys, true);
+    document.addEventListener('keydown', blockKeys, true);
+    
+    // Also listen in game container if available
+    if (gameContainerRef.current) {
+      gameContainerRef.current.addEventListener('keydown', blockKeys, true);
+    }
+    
+    return () => {
+      window.removeEventListener('keydown', blockKeys, true);
+      document.removeEventListener('keydown', blockKeys, true);
+      if (gameContainerRef.current) {
+        gameContainerRef.current.removeEventListener('keydown', blockKeys, true);
+      }
+    };
+  }, [gameStarted]);
 
   // Fetch high score
   useEffect(() => {

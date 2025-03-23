@@ -16,6 +16,19 @@
   --spacing-small: clamp(8px, 2vw, 15px);
   --spacing-medium: clamp(15px, 3vw, 25px);
   --spacing-large: clamp(20px, 5vw, 40px);
+  --contextmenu-display: none !important;
+}
+
+/* Target context menus with high specificity */
+div[role="menu"],
+.context-menu,
+.contextmenu,
+*[contextmenu],
+*[data-contextmenu] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 /* Ensure proper viewport height on mobile */
@@ -90,11 +103,19 @@ html {
   background-color: var(--background-color);
   position: relative;
   overflow: hidden; /* Prevent scrolling when game is active */
+  touch-action: manipulation; /* Optimize for touch */
+  -webkit-tap-highlight-color: transparent; /* Remove highlight on tap */
+}
+
+/* When game is focused */
+body.game-focus * {
+  pointer-events: auto !important; /* Ensure events work */
 }
 
 .game-container canvas {
   max-width: 100%;
   max-height: 100%;
+  cursor: default !important;
   
   /* Better touch handling for iOS */
   touch-action: none;
@@ -102,6 +123,15 @@ html {
   -webkit-user-select: none;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
+}
+
+/* Prevent dragging images */
+img {
+  -webkit-user-drag: none;
+  -khtml-user-drag: none;
+  -moz-user-drag: none;
+  -o-user-drag: none;
+  user-drag: none;
 }
 
 .game-overlay {
@@ -587,5 +617,11 @@ body {
     padding-right: max(var(--spacing-small), env(safe-area-inset-right));
     padding-top: max(var(--spacing-small), env(safe-area-inset-top));
     padding-bottom: max(var(--spacing-small), env(safe-area-inset-bottom));
+  }
+}
+/* For Internet Explorer */
+@media screen and (-ms-high-contrast: active), (-ms-high-contrast: none) {
+  body {
+    -ms-user-select: none;
   }
 }
