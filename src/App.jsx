@@ -10,6 +10,9 @@ import Leaderboard from './components/LeaderboardComponent';
 import BlockchainSync, { initialize as initializeBlockchain } from './hooks/BlockchainSync';
 import NamePromptModal from './components/NamePromptModal'; 
 import { createClient } from '@supabase/supabase-js';
+import CampaignEnded from './components/CampaignEnded';
+
+import * as ReactDOM from 'react-dom/client';
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -280,11 +283,25 @@ function App() {
     }
   }, [showIntro]);
 
-  // Initialize the game
   const startGame = useCallback(() => {
     if (gameStarted) return;
     
     playButtonSound();
+    
+    // Show the campaign ended notification instead of starting the game
+    const campaignEndedComponent = document.createElement('div');
+    campaignEndedComponent.id = 'campaign-ended-container';
+    document.body.appendChild(campaignEndedComponent);
+    
+    // Render the CampaignEnded component into this container
+    const root = ReactDOM.createRoot(campaignEndedComponent);
+    root.render(<CampaignEnded onClose={() => {
+      // Clean up when closed
+      document.body.removeChild(campaignEndedComponent);
+    }} />);
+    
+    /* 
+    // Original game initialization code - commented out
     setLoadingGame(true);
     
     // Simulate loading for the game assets
@@ -305,6 +322,8 @@ function App() {
         });
       }
     }, 2000);
+    */
+    
   }, [gameStarted, playButtonSound]);
 
   // If the game has started, just show the game container with mobile controls
